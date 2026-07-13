@@ -22,6 +22,15 @@ class TrtEngine:
         if err != cuda_runtime.cudaError_t.cudaSuccess:
             raise RuntimeError(f"cudaStreamCreate failed: {err}")
         self._buffers: dict[str, Any] = {}
+        self._input_names: list[str] = []
+        self._output_names: list[str] = []
+        for i in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(i)
+            mode = self.engine.get_tensor_mode(name)
+            if mode == trt.TensorIOMode.INPUT:
+                self._input_names.append(name)
+            elif mode == trt.TensorIOMode.OUTPUT:
+                self._output_names.append(name)
 
     def _deserialize(self) -> trt.ICudaEngine:
         if not self.engine_path.exists():
@@ -30,14 +39,34 @@ class TrtEngine:
         engine = self.runtime.deserialize_cuda_engine(data)
         if engine is None:
             raise RuntimeError(f"Failed to deserialize {self.engine_path}")
+        logger.info("Deserialized TensorRT engine: %s", self.engine_path)
         return engine
 
+    def _ensure_host_buffer(self, arr: np.ndarray, name: str) -> np.ndarray:
+        if not isinstance(arr, np.ndarray):
+            raise TypeError(f"Input '{name}' must be a numpy array, got {type(arr)}")
+        if arr.dtype != trt.nptype(self.engine.get_tensor_dtype(name)):
+            raise TypeError(
+                f"Input '{name}' dtype {arr.dtype} does not match tensor dtype "
+                f"{trt.nptype(self.engine.get_tensor_dtype(name))}"
+            )
+        if arr.ndim == 0:
+            raise ValueError(f"Input '{name}' has zero dimensions")
+        if not arr.flags["C_CONTIGUOUS"] or not arr.flags["ALIGNED"]:
+            logger.warning("Input '%s' is not C-contiguous; making a contiguous copy", name)
+            arr = np.ascontiguousarray(arr, dtype=arr.dtype)
+        return arr
+
     def infer(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        # Set dynamic input shapes and upload inputs
-        device_inputs: dict[str, int] = {}
+        # Upload inputs and bind
         for name, arr in inputs.items():
+            arr = self._ensure_host_buffer(arr, name)
             shape = tuple(arr.shape)
-            self.context.set_input_shape(name, shape)
+            ok = self.context.set_input_shape(name, shape)
+            if not ok:
+                raise RuntimeError(
+                    f"set_input_shape failed for '{name}' with shape {shape}"
+                )
             nbytes = arr.nbytes
             if name not in self._buffers or self._buffers[name]["nbytes"] < nbytes:
                 if name in self._buffers:
@@ -57,17 +86,18 @@ class TrtEngine:
             if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
                 raise RuntimeError(f"cudaMemcpyAsync H2D failed for {name}: {err}")
             self.context.set_tensor_address(name, d_ptr)
-            device_inputs[name] = d_ptr
 
-        # Allocate outputs
+        # Allocate and bind outputs
         outputs: dict[str, np.ndarray] = {}
-        for i in range(self.engine.num_io_tensors):
-            name = self.engine.get_tensor_name(i)
-            if self.engine.get_tensor_mode(name) != trt.TensorIOMode.OUTPUT:
-                continue
+        for name in self._output_names:
             shape = tuple(self.context.get_tensor_shape(name))
+            if any(s <= 0 for s in shape):
+                raise RuntimeError(
+                    f"Output '{name}' has invalid shape {shape}; input shapes may not be set"
+                )
             dtype = trt.nptype(self.engine.get_tensor_dtype(name))
             arr = np.empty(shape, dtype=dtype)
+            arr = np.ascontiguousarray(arr)
             nbytes = arr.nbytes
             key = f"__out__:{name}"
             if key not in self._buffers or self._buffers[key]["nbytes"] < nbytes:
@@ -87,7 +117,7 @@ class TrtEngine:
 
         err = cuda_runtime.cudaStreamSynchronize(self.stream)
         if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"cudaStreamSynchronize failed: {err}")
+            raise RuntimeError(f"cudaStreamSynchronize after execute failed: {err}")
 
         for name, arr in outputs.items():
             key = f"__out__:{name}"
@@ -103,27 +133,46 @@ class TrtEngine:
                 raise RuntimeError(f"cudaMemcpyAsync D2H failed for {name}: {err}")
         err = cuda_runtime.cudaStreamSynchronize(self.stream)
         if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"cudaStreamSynchronize failed: {err}")
+            raise RuntimeError(f"cudaStreamSynchronize after D2H failed: {err}")
         return outputs
 
-    def warmup(self) -> None:
-        for i in range(self.engine.num_io_tensors):
-            name = self.engine.get_tensor_name(i)
-            if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+    def warmup(self, input_shapes: dict[str, tuple[int, ...]] | None = None) -> None:
+        shapes = input_shapes or {}
+        for name in self._input_names:
+            if name in shapes:
+                shape = shapes[name]
+            else:
                 shape = tuple(self.engine.get_tensor_shape(name))
                 if any(s <= 0 for s in shape):
-                    shape = tuple(
-                        max(1, s) if s > 0 else 1 for s in shape
-                    )
-                arr = np.zeros(shape, dtype=trt.nptype(self.engine.get_tensor_dtype(name)))
-                self.infer({name: arr})
-                break
+                    shape = tuple(max(1, s) if s > 0 else 1 for s in shape)
+            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+            arr = np.zeros(shape, dtype=dtype)
+            self.infer({name: arr})
+            break
+
+    def close(self) -> None:
+        destroyed = getattr(self, "_closed", False)
+        if destroyed:
+            return
+        for key in list(getattr(self, "_buffers", {}).keys()):
+            try:
+                cuda_runtime.cudaFree(self._buffers[key]["ptr"])
+            except Exception as exc:
+                logger.warning("cudaFree failed for %s: %s", key, exc)
+            self._buffers.pop(key, None)
+        if hasattr(self, "stream"):
+            try:
+                cuda_runtime.cudaStreamDestroy(self.stream)
+            except Exception as exc:
+                logger.warning("cudaStreamDestroy failed: %s", exc)
+            del self.stream
+        self._closed = True
+
+    # Backward compatibility / alias
+    destroy = close
 
     def __del__(self) -> None:
         try:
-            for key in list(getattr(self, "_buffers", {}).keys()):
-                cuda_runtime.cudaFree(self._buffers[key]["ptr"])
-            if hasattr(self, "stream"):
-                cuda_runtime.cudaStreamDestroy(self.stream)
+            self.close()
         except Exception:
             pass

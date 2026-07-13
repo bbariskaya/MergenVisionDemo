@@ -30,6 +30,18 @@ class FacePipeline:
         self.detector = TrtEngine(Path(cfg.detector_engine_path))
         self.recognizer = TrtEngine(Path(cfg.embedder_engine_path))
 
+    def warmup(self) -> None:
+        # Warm once with representative shapes. This is a no-op if engines are
+        # already warmed, but ensures CUDA buffers and stream are functional.
+        self.detector.warmup(
+            {"input.1": (1, 3, self.cfg.detector_input_size, self.cfg.detector_input_size)}
+        )
+        self.recognizer.warmup({"input.1": (1, 3, 112, 112)})
+
+    def close(self) -> None:
+        self.detector.close()
+        self.recognizer.close()
+
     def detect(self, image: np.ndarray) -> tuple[list[Detection], float]:
         tensor, scale = preprocess_detector(image, self.cfg.detector_input_size)
         outputs = self.detector.infer({"input.1": tensor})

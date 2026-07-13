@@ -14,6 +14,15 @@ class SearchHit:
     score: float
 
 
+ALLOWED_PAYLOAD_KEYS = {
+    "sampleId",
+    "photoId",
+    "personId",
+    "active",
+    "modelVersion",
+}
+
+
 class FaceVectorStore:
     def __init__(self) -> None:
         self._client = AsyncQdrantClient(
@@ -23,6 +32,16 @@ class FaceVectorStore:
         self._vector_size = settings.embedding_dim
         self._distance = models.Distance.COSINE
         self._active_field = "active"
+        self._model_version_field = "modelVersion"
+
+    def _validate_payload(self, payload: dict | None) -> None:
+        payload = payload or {}
+        extra = set(payload.keys()) - ALLOWED_PAYLOAD_KEYS
+        if extra:
+            raise ValueError(f"Forbidden payload keys: {sorted(extra)}")
+        missing = ALLOWED_PAYLOAD_KEYS - set(payload.keys())
+        if missing:
+            raise ValueError(f"Missing required payload keys: {sorted(missing)}")
 
     async def initialize(self) -> None:
         exists = await self._client.collection_exists(self._collection)
@@ -39,8 +58,15 @@ class FaceVectorStore:
                 field_name=self._active_field,
                 field_schema=models.PayloadSchemaType.BOOL,
             )
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name=self._model_version_field,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
 
     async def upsert_batch(self, points: list[models.PointStruct]) -> None:
+        for point in points:
+            self._validate_payload(point.payload)
         await self._client.upsert(collection_name=self._collection, points=points)
 
     async def search_active(

@@ -119,7 +119,7 @@ def main() -> int:
     recognizer = None
 
     for meta in metas:
-        path = MODELS_DIR / meta["file"]
+        path = ARTIFACTS_DIR / meta["file"]
         if is_recognizer(meta):
             recognizer = meta
             make_symlink("recognizer", path)

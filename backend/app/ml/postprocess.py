@@ -10,8 +10,8 @@ class Detection:
     landmarks: np.ndarray  # [5, 2]
 
 
-def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+# SCRFD config used by AntelopeV2 detector: 2 anchors per FPN level.
+# Strides are inferred from tensor counts; anchors per level = count / 2.
 
 
 def _make_anchors(stride: int, size: int, num_anchors: int = 2) -> np.ndarray:
@@ -19,8 +19,9 @@ def _make_anchors(stride: int, size: int, num_anchors: int = 2) -> np.ndarray:
     anchors = []
     for y in range(grid):
         for x in range(grid):
-            cx = (x + 0.5) * stride
-            cy = (y + 0.5) * stride
+            # Official SCRFD uses top-left grid corners; no +0.5 offset.
+            cx = x * stride
+            cy = y * stride
             for _ in range(num_anchors):
                 anchors.append([cx, cy])
     return np.array(anchors, dtype=np.float32)
@@ -55,7 +56,8 @@ def decode_detections(
     conf_threshold: float,
     nms_threshold: float,
 ) -> list[Detection]:
-    # Group outputs by semantic type and sort by stride (largest count first)
+    # Group outputs by semantic type using second-dimension shape, then sort by
+    # descending anchor count (which maps to smaller strides first).
     scores_map: dict[int, np.ndarray] = {}
     bboxes_map: dict[int, np.ndarray] = {}
     landmarks_map: dict[int, np.ndarray] = {}
@@ -64,13 +66,16 @@ def decode_detections(
             continue
         count, dim2 = arr.shape
         if dim2 == 1:
-            scores_map[count] = _sigmoid(arr).reshape(-1)
+            scores_map[count] = arr.reshape(-1)
         elif dim2 == 4:
             bboxes_map[count] = arr
         elif dim2 == 10:
             landmarks_map[count] = arr
     counts = sorted(scores_map.keys(), reverse=True)
-    strides = [input_size // int(np.sqrt(count // 2)) for count in counts]
+    # anchors_per_level = count / num_anchors (2); grid = sqrt(anchors_per_level)
+    strides = [
+        input_size // int(np.sqrt(count // 2)) for count in counts
+    ]
 
     all_boxes: list[np.ndarray] = []
     all_scores: list[np.ndarray] = []
@@ -84,6 +89,7 @@ def decode_detections(
 
         cx = anchors[:, 0]
         cy = anchors[:, 1]
+        # Decode distance predictions (l,t,r,b) to box corners.
         x1 = cx - bbox[:, 0] * stride
         y1 = cy - bbox[:, 1] * stride
         x2 = cx + bbox[:, 2] * stride
@@ -110,13 +116,8 @@ def decode_detections(
     landmarks = np.concatenate(all_landmarks)
 
     keep = _nms(boxes, scores, nms_threshold)
-    detections = []
-    for i in keep:
-        detections.append(
-            Detection(
-                bbox=boxes[i],
-                score=float(scores[i]),
-                landmarks=landmarks[i],
-            )
-        )
+    detections = [
+        Detection(bbox=boxes[i], score=float(scores[i]), landmarks=landmarks[i])
+        for i in keep
+    ]
     return detections
