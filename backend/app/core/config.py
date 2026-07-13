@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     inference_backend: str = "tensorrt"
     detector_model_path: Path = Path("/models/detector.onnx")
     embedder_model_path: Path = Path("/models/recognizer.onnx")
+    detector_engine_path: Path = Path("/engines/detector.engine")
+    embedder_engine_path: Path = Path("/engines/recognizer.engine")
     detector_input_size: int = 640
     embedder_input_size: int = 112
     embedding_dim: int = 512

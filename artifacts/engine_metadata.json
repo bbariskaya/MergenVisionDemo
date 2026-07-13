@@ -1,0 +1,194 @@
+{
+  "antelopev2": {
+    "detector": {
+      "onnx_path": "models/antelopev2/antelopev2/scrfd_10g_bnkps.onnx",
+      "onnx_sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+      "engine_path": "engines/detector.engine",
+      "trt_version": "10.3.0",
+      "cuda_version": "12.4.1",
+      "gpu": {
+        "name": "Quadro RTX 8000",
+        "compute_capability": "7.5"
+      },
+      "precision": "FP16",
+      "profiles": [
+        {
+          "input.1": {
+            "min": [
+              1,
+              3,
+              160,
+              160
+            ],
+            "opt": [
+              1,
+              3,
+              640,
+              640
+            ],
+            "max": [
+              1,
+              3,
+              1280,
+              1280
+            ]
+          }
+        }
+      ],
+      "tensors": [
+        {
+          "name": "input.1",
+          "mode": "TensorIOMode.INPUT",
+          "shape": [
+            1,
+            3,
+            -1,
+            -1
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "448",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            1
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "471",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            1
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "494",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            1
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "451",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            4
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "474",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            4
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "497",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            4
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "454",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            10
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "477",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            10
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "500",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            10
+          ],
+          "dtype": "DataType.FLOAT"
+        }
+      ],
+      "build_duration_seconds": 57.55732035636902
+    },
+    "recognizer": {
+      "onnx_path": "models/antelopev2/antelopev2/glintr100.onnx",
+      "onnx_sha256": "4ab1d6435d639628a6f3e5008dd4f929edf4c4124b1a7169e1048f9fef534cdf",
+      "engine_path": "engines/recognizer.engine",
+      "trt_version": "10.3.0",
+      "cuda_version": "12.4.1",
+      "gpu": {
+        "name": "Quadro RTX 8000",
+        "compute_capability": "7.5"
+      },
+      "precision": "FP16",
+      "profiles": [
+        {
+          "input.1": {
+            "min": [
+              1,
+              3,
+              112,
+              112
+            ],
+            "opt": [
+              16,
+              3,
+              112,
+              112
+            ],
+            "max": [
+              64,
+              3,
+              112,
+              112
+            ]
+          }
+        }
+      ],
+      "tensors": [
+        {
+          "name": "input.1",
+          "mode": "TensorIOMode.INPUT",
+          "shape": [
+            -1,
+            3,
+            112,
+            112
+          ],
+          "dtype": "DataType.FLOAT"
+        },
+        {
+          "name": "1333",
+          "mode": "TensorIOMode.OUTPUT",
+          "shape": [
+            -1,
+            512
+          ],
+          "dtype": "DataType.FLOAT"
+        }
+      ],
+      "build_duration_seconds": 85.16215825080872
+    }
+  }
+}

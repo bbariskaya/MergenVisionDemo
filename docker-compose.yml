@@ -48,6 +48,7 @@ services:
       dockerfile: Dockerfile
     env_file: [.env]
     volumes:
+      - ./artifacts:/app/artifacts
       - ./artifacts/models:/models:ro
       - ./artifacts/engines:/engines:ro
       - api_tmp:/tmp

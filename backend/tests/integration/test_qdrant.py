@@ -93,13 +93,22 @@ async def test_qdrant_payload_has_no_pii(vector_store: FaceVectorStore) -> None:
         "active": True,
         "modelVersion": model_version,
     }
+    allowed = {"sampleId", "photoId", "personId", "active", "modelVersion"}
 
     await vector_store.upsert_batch(
         [models.PointStruct(id=str(sample_id), vector=vector, payload=payload)]
     )
 
     try:
-        keys = set(payload.keys())
+        retrieved = await vector_store._client.retrieve(
+            collection_name=vector_store._collection,
+            ids=[str(sample_id)],
+            with_payload=True,
+        )
+        assert len(retrieved) == 1
+        persisted_payload = retrieved[0].payload or {}
+        keys = set(persisted_payload.keys())
+        assert keys == allowed
         forbidden = {"name", "first_name", "national_id", "national_id_masked"}
         assert not keys & forbidden
     finally:
