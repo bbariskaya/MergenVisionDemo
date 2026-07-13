@@ -1,0 +1,11 @@
+{
+  "name": "mergenvision-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo placeholder build"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
