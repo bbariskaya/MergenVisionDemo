@@ -47,6 +47,7 @@ from app.services.bulk_manifest import (
     EnrollmentPhoto,
     build_casia_manifest,
     build_lfw_manifest,
+    shard_by_person_id,
 )
 from app.services.vggface_manifest import (
     stream_vggface_manifest,
@@ -259,7 +260,7 @@ async def _load_identities(
             resume_after_identity_key=payload.resume_after_identity_key,
             max_photos=max_photos,
         )
-    el    if payload.type == "local_lfw":
+    elif payload.type == "local_lfw":
         if not payload.path:
             raise ValueError("local_lfw source requires path")
         root = Path(payload.path)
@@ -275,6 +276,9 @@ async def _load_identities(
         if not root.is_dir():
             raise ValueError(f"casia root not found: {root}")
         identities = build_casia_manifest(root)
+        if num_shards > 1:
+            shards = shard_by_person_id(identities, num_shards)
+            identities = shards[shard_index]
         if payload.max_identities is not None:
             identities = identities[: payload.max_identities]
     else:

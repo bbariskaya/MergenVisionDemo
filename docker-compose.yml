@@ -52,7 +52,7 @@ services:
     environment:
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
       LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
-      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
+      CASIA_DATASET_PATH: /datasets/casia-webface
     volumes:
       - ./backend:/app
       - ./artifacts:/app/artifacts
@@ -94,7 +94,7 @@ services:
       HOST_GPU_DEVICE_ID: ${GPU_WORKER_1_DEVICE_ID:-1}
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
       LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
-      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
+      CASIA_DATASET_PATH: /datasets/casia-webface
       API_PORT: 8001
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -137,7 +137,7 @@ services:
       HOST_GPU_DEVICE_ID: ${GPU_WORKER_2_DEVICE_ID:-2}
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
       LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
-      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
+      CASIA_DATASET_PATH: /datasets/casia-webface
       API_PORT: 8001
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -180,7 +180,7 @@ services:
       HOST_GPU_DEVICE_ID: ${GPU_WORKER_0_DEVICE_ID:-0}
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
       LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
-      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
+      CASIA_DATASET_PATH: /datasets/casia-webface
       API_PORT: 8001
       PYTHONUNBUFFERED: "1"
     volumes:
