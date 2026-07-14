@@ -45,7 +45,13 @@ def _estimate_similarity_transform(src: np.ndarray, dst: np.ndarray) -> np.ndarr
 
 
 def align_face(image: np.ndarray, landmarks: np.ndarray, size: int = 112) -> np.ndarray:
+    if size != 112:
+        raise NotImplementedError(
+            f"Alignment size {size} is not supported; only 112 is supported"
+        )
     landmarks = landmarks.astype(np.float32)
+    if not np.isfinite(landmarks).all():
+        raise ValueError("landmarks contain non-finite values")
     M = _estimate_similarity_transform(landmarks, ARC_FACE_SRC)
     aligned = cv2.warpAffine(image, M, (size, size), borderValue=0.0)
     return aligned

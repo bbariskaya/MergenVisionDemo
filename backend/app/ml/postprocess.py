@@ -31,7 +31,8 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, threshold: float) -> list[int]:
     if len(boxes) == 0:
         return []
     x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
+    # Inclusive-coordinate area/intersection to match official InsightFace SCRFD.
+    areas = (x2 - x1 + 1.0) * (y2 - y1 + 1.0)
     order = scores.argsort()[::-1]
     keep = []
     while order.size > 0:
@@ -41,8 +42,8 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, threshold: float) -> list[int]:
         yy1 = np.maximum(y1[i], y1[order[1:]])
         xx2 = np.minimum(x2[i], x2[order[1:]])
         yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
+        w = np.maximum(0.0, xx2 - xx1 + 1.0)
+        h = np.maximum(0.0, yy2 - yy1 + 1.0)
         inter = w * h
         union = areas[i] + areas[order[1:]] - inter
         iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)

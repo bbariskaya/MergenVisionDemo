@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     minio_access_key: str
     minio_secret_key: str
     minio_bucket_photos: str = "mergenvision-photos"
+    minio_secure: bool = False
 
     qdrant_url: str
     qdrant_collection: str = "face_samples"

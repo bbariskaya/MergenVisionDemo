@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,8 @@ class TrtEngine:
                 self._input_names.append(name)
             elif mode == trt.TensorIOMode.OUTPUT:
                 self._output_names.append(name)
+        self._lock = threading.Lock()
+        self._closed = False
 
     def _deserialize(self) -> trt.ICudaEngine:
         if not self.engine_path.exists():
@@ -58,83 +61,98 @@ class TrtEngine:
         return arr
 
     def infer(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        # Upload inputs and bind
-        for name, arr in inputs.items():
-            arr = self._ensure_host_buffer(arr, name)
-            shape = tuple(arr.shape)
-            ok = self.context.set_input_shape(name, shape)
-            if not ok:
-                raise RuntimeError(
-                    f"set_input_shape failed for '{name}' with shape {shape}"
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Cannot infer on a closed TrtEngine")
+
+            provided = set(inputs.keys())
+            expected = set(self._input_names)
+            if provided != expected:
+                missing = expected - provided
+                extra = provided - expected
+                raise ValueError(
+                    f"Input name mismatch. Missing: {sorted(missing)}, Extra: {sorted(extra)}"
                 )
-            nbytes = arr.nbytes
-            if name not in self._buffers or self._buffers[name]["nbytes"] < nbytes:
-                if name in self._buffers:
-                    cuda_runtime.cudaFree(self._buffers[name]["ptr"])
-                err, d_ptr = cuda_runtime.cudaMalloc(nbytes)
-                if err != cuda_runtime.cudaError_t.cudaSuccess:
-                    raise RuntimeError(f"cudaMalloc failed for {name}: {err}")
-                self._buffers[name] = {"ptr": int(d_ptr), "nbytes": nbytes}
-            d_ptr = self._buffers[name]["ptr"]
-            err = cuda_runtime.cudaMemcpyAsync(
-                d_ptr,
-                arr.ctypes.data,
-                nbytes,
-                cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
-                self.stream,
-            )
-            if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
-                raise RuntimeError(f"cudaMemcpyAsync H2D failed for {name}: {err}")
-            self.context.set_tensor_address(name, d_ptr)
 
-        # Allocate and bind outputs
-        outputs: dict[str, np.ndarray] = {}
-        for name in self._output_names:
-            shape = tuple(self.context.get_tensor_shape(name))
-            if any(s <= 0 for s in shape):
-                raise RuntimeError(
-                    f"Output '{name}' has invalid shape {shape}; input shapes may not be set"
+            # Upload inputs and bind
+            for name, arr in inputs.items():
+                arr = self._ensure_host_buffer(arr, name)
+                shape = tuple(arr.shape)
+                ok = self.context.set_input_shape(name, shape)
+                if not ok:
+                    raise RuntimeError(
+                        f"set_input_shape failed for '{name}' with shape {shape}"
+                    )
+                nbytes = arr.nbytes
+                if name not in self._buffers or self._buffers[name]["nbytes"] < nbytes:
+                    if name in self._buffers:
+                        cuda_runtime.cudaFree(self._buffers[name]["ptr"])
+                    err, d_ptr = cuda_runtime.cudaMalloc(nbytes)
+                    if err != cuda_runtime.cudaError_t.cudaSuccess:
+                        raise RuntimeError(f"cudaMalloc failed for {name}: {err}")
+                    self._buffers[name] = {"ptr": int(d_ptr), "nbytes": nbytes}
+                d_ptr = self._buffers[name]["ptr"]
+                err = cuda_runtime.cudaMemcpyAsync(
+                    d_ptr,
+                    arr.ctypes.data,
+                    nbytes,
+                    cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                    self.stream,
                 )
-            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
-            arr = np.empty(shape, dtype=dtype)
-            arr = np.ascontiguousarray(arr)
-            nbytes = arr.nbytes
-            key = f"__out__:{name}"
-            if key not in self._buffers or self._buffers[key]["nbytes"] < nbytes:
-                if key in self._buffers:
-                    cuda_runtime.cudaFree(self._buffers[key]["ptr"])
-                err, d_ptr = cuda_runtime.cudaMalloc(nbytes)
-                if err != cuda_runtime.cudaError_t.cudaSuccess:
-                    raise RuntimeError(f"cudaMalloc failed for {name}: {err}")
-                self._buffers[key] = {"ptr": int(d_ptr), "nbytes": nbytes}
-            d_ptr = self._buffers[key]["ptr"]
-            self.context.set_tensor_address(name, d_ptr)
-            outputs[name] = arr
+                if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
+                    raise RuntimeError(f"cudaMemcpyAsync H2D failed for {name}: {err}")
+                if not self.context.set_tensor_address(name, d_ptr):
+                    raise RuntimeError(f"set_tensor_address failed for input '{name}'")
 
-        success = self.context.execute_async_v3(self.stream)
-        if not success:
-            raise RuntimeError("execute_async_v3 failed")
+            # Allocate and bind outputs
+            outputs: dict[str, np.ndarray] = {}
+            for name in self._output_names:
+                shape = tuple(self.context.get_tensor_shape(name))
+                if any(s <= 0 for s in shape):
+                    raise RuntimeError(
+                        f"Output '{name}' has invalid shape {shape}; input shapes may not be set"
+                    )
+                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+                arr = np.empty(shape, dtype=dtype)
+                arr = np.ascontiguousarray(arr)
+                nbytes = arr.nbytes
+                key = f"__out__:{name}"
+                if key not in self._buffers or self._buffers[key]["nbytes"] < nbytes:
+                    if key in self._buffers:
+                        cuda_runtime.cudaFree(self._buffers[key]["ptr"])
+                    err, d_ptr = cuda_runtime.cudaMalloc(nbytes)
+                    if err != cuda_runtime.cudaError_t.cudaSuccess:
+                        raise RuntimeError(f"cudaMalloc failed for {name}: {err}")
+                    self._buffers[key] = {"ptr": int(d_ptr), "nbytes": nbytes}
+                d_ptr = self._buffers[key]["ptr"]
+                if not self.context.set_tensor_address(name, d_ptr):
+                    raise RuntimeError(f"set_tensor_address failed for output '{name}'")
+                outputs[name] = arr
 
-        err = cuda_runtime.cudaStreamSynchronize(self.stream)
-        if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"cudaStreamSynchronize after execute failed: {err}")
+            success = self.context.execute_async_v3(self.stream)
+            if not success:
+                raise RuntimeError("execute_async_v3 failed")
 
-        for name, arr in outputs.items():
-            key = f"__out__:{name}"
-            d_ptr = self._buffers[key]["ptr"]
-            err = cuda_runtime.cudaMemcpyAsync(
-                arr.ctypes.data,
-                d_ptr,
-                arr.nbytes,
-                cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
-                self.stream,
-            )
+            err = cuda_runtime.cudaStreamSynchronize(self.stream)
             if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
-                raise RuntimeError(f"cudaMemcpyAsync D2H failed for {name}: {err}")
-        err = cuda_runtime.cudaStreamSynchronize(self.stream)
-        if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"cudaStreamSynchronize after D2H failed: {err}")
-        return outputs
+                raise RuntimeError(f"cudaStreamSynchronize after execute failed: {err}")
+
+            for name, arr in outputs.items():
+                key = f"__out__:{name}"
+                d_ptr = self._buffers[key]["ptr"]
+                err = cuda_runtime.cudaMemcpyAsync(
+                    arr.ctypes.data,
+                    d_ptr,
+                    arr.nbytes,
+                    cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                    self.stream,
+                )
+                if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
+                    raise RuntimeError(f"cudaMemcpyAsync D2H failed for {name}: {err}")
+            err = cuda_runtime.cudaStreamSynchronize(self.stream)
+            if err[0] != cuda_runtime.cudaError_t.cudaSuccess:
+                raise RuntimeError(f"cudaStreamSynchronize after D2H failed: {err}")
+            return outputs
 
     def warmup(self, input_shapes: dict[str, tuple[int, ...]] | None = None) -> None:
         shapes = input_shapes or {}
@@ -151,22 +169,22 @@ class TrtEngine:
             break
 
     def close(self) -> None:
-        destroyed = getattr(self, "_closed", False)
-        if destroyed:
-            return
-        for key in list(getattr(self, "_buffers", {}).keys()):
-            try:
-                cuda_runtime.cudaFree(self._buffers[key]["ptr"])
-            except Exception as exc:
-                logger.warning("cudaFree failed for %s: %s", key, exc)
-            self._buffers.pop(key, None)
-        if hasattr(self, "stream"):
-            try:
-                cuda_runtime.cudaStreamDestroy(self.stream)
-            except Exception as exc:
-                logger.warning("cudaStreamDestroy failed: %s", exc)
-            del self.stream
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            for key in list(self._buffers.keys()):
+                try:
+                    cuda_runtime.cudaFree(self._buffers[key]["ptr"])
+                except Exception as exc:
+                    logger.warning("cudaFree failed for %s: %s", key, exc)
+                self._buffers.pop(key, None)
+            if hasattr(self, "stream"):
+                try:
+                    cuda_runtime.cudaStreamDestroy(self.stream)
+                except Exception as exc:
+                    logger.warning("cudaStreamDestroy failed: %s", exc)
+                del self.stream
+            self._closed = True
 
     # Backward compatibility / alias
     destroy = close

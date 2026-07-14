@@ -24,4 +24,7 @@ async def vector_store():
 
     v = FaceVectorStore()
     await v.initialize()
-    return v
+    try:
+        yield v
+    finally:
+        await v.close()

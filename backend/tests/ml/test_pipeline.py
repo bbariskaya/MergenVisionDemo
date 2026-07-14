@@ -1,35 +1,15 @@
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 import pytest
 
+from app.ml.alignment import align_face
 from app.ml.pipeline import FaceExtraction, FacePipeline
 from app.ml.preprocess import load_image
 
 
 SAMPLES_DIR = Path("/app/artifacts/samples")
 LFW_DIR = Path("/app/lfw/lfw-deepfunneled/lfw-deepfunneled")
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ensure_samples():
-    import subprocess
-
-    if not (SAMPLES_DIR / "t1.jpg").exists():
-        subprocess.run(
-            ["python", "scripts/download_samples.py"],
-            cwd="/app",
-            check=True,
-        )
-
-
-@pytest.fixture(scope="session")
-def pipeline() -> Iterator[FacePipeline]:
-    pipe = FacePipeline()
-    pipe.warmup()
-    yield pipe
-    pipe.close()
 
 
 def _first_extraction(pipeline: FacePipeline, path: Path) -> FaceExtraction:
@@ -63,6 +43,44 @@ def test_detect_no_face(pipeline: FacePipeline) -> None:
 
 def test_embedding_shape_and_norm(pipeline: FacePipeline) -> None:
     _first_embedding(pipeline, SAMPLES_DIR / "t1.jpg")
+
+
+def test_extract_uses_single_recognizer_batch(pipeline: FacePipeline, monkeypatch) -> None:
+    image = load_image(SAMPLES_DIR / "t1.jpg")
+    faces = pipeline.extract_from_path(SAMPLES_DIR / "t1.jpg")
+    assert len(faces) >= 2, f"expected >=2 faces, got {len(faces)}"
+
+    call_count = {"recognizer": 0}
+    original_infer = pipeline.recognizer.infer
+
+    def counting_infer(inputs):
+        call_count["recognizer"] += 1
+        return original_infer(inputs)
+
+    monkeypatch.setattr(pipeline.recognizer, "infer", counting_infer)
+
+    results = pipeline.extract(image)
+    assert len(results) == len(faces)
+    assert call_count["recognizer"] == 1, (
+        f"expected exactly one recognizer inference for {len(faces)} faces, "
+        f"got {call_count['recognizer']}"
+    )
+    for i, (face, result) in enumerate(zip(faces, results)):
+        np.testing.assert_allclose(face.embedding, result.embedding, rtol=1e-5, atol=1e-5)
+
+
+def test_extract_no_face_recognizer_not_called(pipeline: FacePipeline, monkeypatch) -> None:
+    image = load_image(SAMPLES_DIR / "mask_blue.jpg")
+    called = {"recognizer": False}
+
+    def failing_infer(_inputs):
+        called["recognizer"] = True
+        raise AssertionError("recognizer should not be called when no faces detected")
+
+    monkeypatch.setattr(pipeline.recognizer, "infer", failing_infer)
+    faces = pipeline.extract(image)
+    assert len(faces) == 0
+    assert called["recognizer"] is False
 
 
 def test_batch_parity(pipeline: FacePipeline) -> None:

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -9,12 +10,21 @@ from app.infrastructure.minio import PhotoStorage
 from app.infrastructure.qdrant import FaceVectorStore
 
 logger = logging.getLogger(__name__)
+_TIMEOUT_SECONDS = 5.0
+
+REQUIRED_TABLES = (
+    "person",
+    "person_photo",
+    "face_sample",
+    "recognition_request",
+    "recognition_result",
+)
 
 
 @dataclass(frozen=True)
 class ComponentStatus:
     name: str
-    status: str  # "ok" or "unavailable"
+    status: str
     details: dict[str, Any] | None = None
 
 
@@ -30,40 +40,57 @@ class ReadinessService:
         self._vector_store = vector_store
 
     async def check(self) -> tuple[list[ComponentStatus], bool]:
-        statuses: list[ComponentStatus] = []
-        postgres_ok = await self._check_postgres()
-        minio_ok = await self._storage.health_check()
-        qdrant_ok = await self._vector_store.health_check()
+        coros = [
+            self._check_with_timeout("postgres", self._check_postgres()),
+            self._check_with_timeout("minio", self._storage.health_check()),
+            self._check_with_timeout("qdrant", self._vector_store.health_check()),
+        ]
+        statuses = await asyncio.gather(*coros, return_exceptions=True)
+        ok = all(
+            not isinstance(s, Exception) and s.status == "ok" for s in statuses
+        )
+        if not ok:
+            logger.warning(
+                "Readiness check failed: %s",
+                [
+                    {"name": getattr(s, "name", None), "status": getattr(s, "status", "error")}
+                    for s in statuses
+                ],
+            )
+        return statuses, ok
 
-        statuses.append(
-            ComponentStatus(
-                name="postgres",
-                status="ok" if postgres_ok else "unavailable",
-            )
-        )
-        statuses.append(
-            ComponentStatus(
-                name="minio",
-                status="ok" if minio_ok else "unavailable",
-            )
-        )
-        statuses.append(
-            ComponentStatus(
-                name="qdrant",
-                status="ok" if qdrant_ok else "unavailable",
-            )
-        )
-
-        all_ok = postgres_ok and minio_ok and qdrant_ok
-        if not all_ok:
-            logger.warning("Readiness check failed: %s", statuses)
-        return statuses, all_ok
+    async def _check_with_timeout(self, name: str, coro) -> ComponentStatus:
+        try:
+            healthy = await asyncio.wait_for(coro, timeout=_TIMEOUT_SECONDS)
+            status = "ok" if healthy else "unavailable"
+            details = None
+        except asyncio.TimeoutError:
+            status = "unavailable"
+            details = {"reason": "timeout"}
+        except Exception as exc:
+            status = "unavailable"
+            details = {"reason": exc.__class__.__name__}
+        return ComponentStatus(name=name, status=status, details=details)
 
     async def _check_postgres(self) -> bool:
         try:
             async with self._engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
+                missing: list[str] = []
+                for table in REQUIRED_TABLES:
+                    result = await conn.execute(
+                        text(f"SELECT to_regclass('public.{table}')")
+                    )
+                    if result.scalar() is None:
+                        missing.append(table)
+                if missing:
+                    logger.warning(
+                        "Postgres readiness: missing required tables: %s", missing
+                    )
+                    return False
                 return True
         except Exception as exc:
-            logger.warning("Postgres readiness check failed: %s", exc)
+            logger.warning(
+                "Postgres readiness check failed: %s", exc.__class__.__name__
+            )
             return False

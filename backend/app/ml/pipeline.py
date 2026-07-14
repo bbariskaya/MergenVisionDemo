@@ -18,9 +18,11 @@ class FaceExtraction:
 
 
 def l2_normalize(x: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(x)
+    if not np.isfinite(x).all():
+        raise ValueError("embedding contains non-finite values")
+    norm = float(np.linalg.norm(x))
     if norm == 0:
-        return x
+        raise ValueError("zero embedding cannot be normalized")
     return x / norm
 
 
@@ -59,30 +61,66 @@ class FacePipeline:
         embedding = list(outputs.values())[0].reshape(-1)
         return l2_normalize(embedding)
 
+    def _recognizer_max_batch(self) -> int:
+        # Derive the maximum batch size from the engine's optimization profile.
+        # The recognizer input name is input.1 and its first dimension is N.
+        try:
+            _, _, max_shape = self.recognizer.engine.get_tensor_profile_shape(
+                "input.1", 0
+            )
+            return int(max_shape[0])
+        except Exception:
+            return 64
+
     def embed_batch(self, aligned_faces: list[np.ndarray]) -> np.ndarray:
         if not aligned_faces:
             return np.zeros((0, self.cfg.embedding_dim), dtype=np.float32)
-        batch = np.stack(
-            [preprocess_recognizer(face)[0] for face in aligned_faces], axis=0
-        )
-        outputs = self.recognizer.infer({"input.1": batch})
-        embeddings = list(outputs.values())[0]
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms[norms == 0] = 1
-        return embeddings / norms
+        max_batch = self._recognizer_max_batch()
+        chunks = [
+            aligned_faces[i : i + max_batch]
+            for i in range(0, len(aligned_faces), max_batch)
+        ]
+        all_embeddings: list[np.ndarray] = []
+        for chunk in chunks:
+            batch = np.stack(
+                [preprocess_recognizer(face)[0] for face in chunk], axis=0
+            )
+            outputs = self.recognizer.infer({"input.1": batch})
+            embeddings = list(outputs.values())[0]
+            all_embeddings.append(embeddings)
+        combined = np.concatenate(all_embeddings, axis=0)
+        if not np.isfinite(combined).all():
+            raise ValueError("batched recognizer output contains non-finite values")
+        norms = np.linalg.norm(combined, axis=1, keepdims=True)
+        if np.any(norms == 0):
+            raise ValueError("batched recognizer output contains zero-norm embedding")
+        return combined / norms
 
     def extract(self, image: np.ndarray) -> list[FaceExtraction]:
         detections, scale = self.detect(image)
-        results = []
+        if not detections:
+            return []
+
         inv_scale = 1.0 / scale
+        aligned_faces: list[np.ndarray] = []
+        scaled_bboxes: list[np.ndarray] = []
+        scaled_landmarks: list[np.ndarray] = []
         for det in detections:
-            aligned = align_face(image, det.landmarks * inv_scale)
-            embedding = self.embed_aligned(aligned)
+            aligned_faces.append(align_face(image, det.landmarks * inv_scale))
+            scaled_bboxes.append(det.bbox * inv_scale)
+            scaled_landmarks.append(det.landmarks * inv_scale)
+
+        embeddings = self.embed_batch(aligned_faces)
+
+        results: list[FaceExtraction] = []
+        for bbox, landmarks, embedding in zip(
+            scaled_bboxes, scaled_landmarks, embeddings, strict=True
+        ):
             results.append(
                 FaceExtraction(
-                    bbox=det.bbox * inv_scale,
-                    landmarks=det.landmarks * inv_scale,
-                    embedding=embedding,
+                    bbox=bbox,
+                    landmarks=landmarks,
+                    embedding=l2_normalize(embedding),
                 )
             )
         return results

@@ -52,3 +52,39 @@ def test_ready_returns_503_on_failure(monkeypatch, client: TestClient) -> None:
     assert minio_status["status"] == "unavailable"
     for key in ("traceback", "exception", "password", "secret", "endpoint"):
         assert key not in data
+
+
+def test_ready_adapter_level_minio_unavailable(monkeypatch, client: TestClient) -> None:
+    service = client.app.state.readiness_service
+
+    async def unhealthy():
+        return False
+
+    monkeypatch.setattr(service._storage, "health_check", unhealthy)
+
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "unavailable"
+    minio = next(c for c in data["components"] if c["name"] == "minio")
+    assert minio["status"] == "unavailable"
+    for key in ("traceback", "exception", "password", "secret", "endpoint"):
+        assert key not in data
+
+
+def test_ready_adapter_level_qdrant_unavailable(
+    monkeypatch, client: TestClient
+) -> None:
+    service = client.app.state.readiness_service
+
+    async def unhealthy():
+        return False
+
+    monkeypatch.setattr(service._vector_store, "health_check", unhealthy)
+
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "unavailable"
+    qdrant = next(c for c in data["components"] if c["name"] == "qdrant")
+    assert qdrant["status"] == "unavailable"

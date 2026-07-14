@@ -21,14 +21,23 @@ class PhotoStorage:
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
-            secure=False,
+            secure=settings.minio_secure,
         )
         self._bucket = settings.minio_bucket_photos
 
     async def initialize(self) -> None:
         exists = await asyncio.to_thread(self._client.bucket_exists, self._bucket)
-        if not exists:
+        if exists:
+            return
+        try:
             await asyncio.to_thread(self._client.make_bucket, self._bucket)
+        except S3Error as exc:
+            if exc.code in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                return
+            raise
+        # Final verification after create/race.
+        if not await asyncio.to_thread(self._client.bucket_exists, self._bucket):
+            raise RuntimeError(f"MinIO bucket {self._bucket} not available after init")
 
     async def put_object(
         self,
@@ -83,7 +92,8 @@ class PhotoStorage:
 
     async def health_check(self) -> bool:
         try:
-            await asyncio.to_thread(self._client.bucket_exists, self._bucket)
-            return True
+            return bool(
+                await asyncio.to_thread(self._client.bucket_exists, self._bucket)
+            )
         except Exception:
             return False

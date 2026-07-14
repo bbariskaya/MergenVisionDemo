@@ -1,0 +1,13 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "mergenvision-gpu"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.scikit-build]
+minimum-version = "0.9"
+cmake.verbose = true
+build-dir = "build/{wheel_tag}"

@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -16,13 +18,14 @@ def configure_engine() -> None:
 
 
 async def dispose_engine() -> None:
-    global engine
+    global engine, AsyncSessionLocal
     if engine is not None:
         await engine.dispose()
         engine = None
+    AsyncSessionLocal = None
 
 
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncIterator[AsyncSession]:
     if AsyncSessionLocal is None:
         raise RuntimeError("Database engine not configured")
     async with AsyncSessionLocal() as session:

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import tensorrt as trt
 
+from app.ml.engine_reuse import metadata_matches
+
 DEFAULT_ARTIFACTS_DIR = Path("/app/artifacts")
 ARTIFACTS_DIR = Path(os.environ.get("ARTIFACTS_DIR", DEFAULT_ARTIFACTS_DIR))
 MODELS_DIR = ARTIFACTS_DIR / "models"
@@ -80,8 +82,18 @@ def build_engine(
     if engine is None:
         raise RuntimeError(f"Engine deserialization failed: {onnx_path}")
 
-    with open(engine_path, "wb") as f:
+    part_path = engine_path.with_suffix(engine_path.suffix + ".part")
+    with open(part_path, "wb") as f:
         f.write(serialized)
+    # Deserialize the part file as a smoke test before atomically promoting it.
+    smoke = runtime.deserialize_cuda_engine(part_path.read_bytes())
+    if smoke is None:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Deserialized smoke test failed for {engine_path}")
+    del smoke
+    part_path.replace(engine_path)
+    # Re-read from final path for metadata hash.
+    engine_path_bytes = engine_path.read_bytes()
 
     tensor_info: list[dict] = []
     for i in range(engine.num_io_tensors):
@@ -104,28 +116,51 @@ def build_engine(
         "tensors": tensor_info,
         "profiles": profiles_info,
         "fp16": fp16,
+        "engine_sha256": hashlib.sha256(engine_path_bytes).hexdigest(),
     }
 
 
+RECOGNIZER_INPUT_NAME = "input.1"
+RECOGNIZER_PRECISION = "FP16"
+RECOGNIZER_PROFILES = [
+    {
+        RECOGNIZER_INPUT_NAME: {
+            "min": [1, 3, 112, 112],
+            "opt": [128, 3, 112, 112],
+            "max": [256, 3, 112, 112],
+        }
+    }
+]
+
+
 def build_recognizer(onnx_path: Path, engine_path: Path) -> dict:
-    # glintr100: input [N,3,112,112], output [N,512]
-    input_name = "input.1"
     input_profiles = {
-        input_name: (
+        RECOGNIZER_INPUT_NAME: (
             [1, 3, 112, 112],
-            [16, 3, 112, 112],
-            [64, 3, 112, 112],
+            [128, 3, 112, 112],
+            [256, 3, 112, 112],
         )
     }
     _, info = build_engine(onnx_path, engine_path, fp16=True, input_profiles=input_profiles)
     return info
 
 
+DETECTOR_INPUT_NAME = "input.1"
+DETECTOR_PRECISION = "FP16"
+DETECTOR_PROFILES = [
+    {
+        DETECTOR_INPUT_NAME: {
+            "min": [1, 3, 160, 160],
+            "opt": [1, 3, 640, 640],
+            "max": [1, 3, 1280, 1280],
+        }
+    }
+]
+
+
 def build_detector(onnx_path: Path, engine_path: Path) -> dict:
-    # SCRFD has fixed batch 1, dynamic H/W.
-    input_name = "input.1"
     input_profiles = {
-        input_name: (
+        DETECTOR_INPUT_NAME: (
             [1, 3, 160, 160],
             [1, 3, 640, 640],
             [1, 3, 1280, 1280],
@@ -166,20 +201,34 @@ def main() -> int:
 
     artifacts = {}
 
-    def build_if_needed(name: str, onnx_path: Path, builder_fn) -> dict:
+    def build_if_needed(
+        name: str,
+        onnx_path: Path,
+        builder_fn,
+        expected_precision: str,
+        expected_profiles: list[dict],
+    ) -> dict:
         engine_path = ENGINES_DIR / f"{name}.engine"
         onnx_sha = sha256_file(onnx_path)
         existing = pack_manifest.get(name)
+        cc = gpu_info.get("compute_capability") if gpu_info else ""
+        engine_sha = sha256_file(engine_path) if engine_path.exists() else ""
 
-        if (
-            not args.force
-            and engine_path.exists()
-            and existing
-            and existing.get("onnx_sha256") == onnx_sha
-            and existing.get("trt_version") == trt_version
-            and existing.get("cuda_version") == cuda_version
-            and existing.get("gpu_compute_capability") == gpu_info.get("compute_capability")
-        ):
+        if not args.force and engine_path.exists():
+            if not metadata_matches(
+                existing,
+                onnx_sha256=onnx_sha,
+                engine_sha256=engine_sha,
+                trt_version=trt_version,
+                cuda_version=cuda_version,
+                gpu_compute_capability=cc,
+                precision=expected_precision,
+                profiles=expected_profiles,
+            ):
+                raise RuntimeError(
+                    f"Existing engine {engine_path} is stale or incompatible. "
+                    "Use --force to rebuild."
+                )
             print(f"Reusing existing {engine_path}")
             return existing
 
@@ -192,20 +241,33 @@ def main() -> int:
         entry = {
             "onnx_path": str(onnx_path.relative_to(ARTIFACTS_DIR)),
             "onnx_sha256": onnx_sha,
+            "engine_sha256": info["engine_sha256"],
             "engine_path": str(engine_path.relative_to(ARTIFACTS_DIR)),
             "trt_version": trt_version,
             "cuda_version": cuda_version,
             "gpu": gpu_info,
-            "precision": "FP16" if info["fp16"] else "FP32",
-            "profiles": info["profiles"],
+            "precision": expected_precision,
+            "profiles": expected_profiles,
             "tensors": info["tensors"],
             "build_duration_seconds": elapsed,
         }
         pack_manifest[name] = entry
         return entry
 
-    artifacts["detector"] = build_if_needed("detector", detector_onnx, build_detector)
-    artifacts["recognizer"] = build_if_needed("recognizer", recognizer_onnx, build_recognizer)
+    artifacts["detector"] = build_if_needed(
+        "detector",
+        detector_onnx,
+        build_detector,
+        DETECTOR_PRECISION,
+        DETECTOR_PROFILES,
+    )
+    artifacts["recognizer"] = build_if_needed(
+        "recognizer",
+        recognizer_onnx,
+        build_recognizer,
+        RECOGNIZER_PRECISION,
+        RECOGNIZER_PROFILES,
+    )
 
     METADATA_PATH.write_text(json.dumps(manifest, indent=2))
     print(f"\nEngine metadata written to {METADATA_PATH}")

@@ -22,6 +22,12 @@ dependencies = [
     "tensorrt==10.3.0",
     "cuda-python>=13.0",
     "opencv-python-headless>=4.9.0",
+    "nvidia-nvimgcodec-cu12==0.8.0.22",
+    "cvcuda-cu12==0.16.0",
+    # Optional nvImageCodec plugins; installing them silences harmless but noisy
+    # "missing extension" warnings at decoder startup.
+    "nvidia-nvjpeg2k-cu12>=0.3.0",
+    "nvidia-nvtiff-cu12>=0.2.0",
 ]
 
 [project.optional-dependencies]

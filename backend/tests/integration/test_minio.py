@@ -37,3 +37,17 @@ async def test_minio_delete_idempotent(storage: PhotoStorage) -> None:
     object_key = f"test/{uuid7()}-missing.bin"
     await storage.delete_object(object_key)
     assert await storage.object_exists(object_key) is False
+
+
+@pytest.mark.asyncio
+async def test_minio_health_check_true_when_bucket_exists(
+    storage: PhotoStorage,
+) -> None:
+    assert await storage.health_check() is True
+
+
+@pytest.mark.asyncio
+async def test_minio_health_check_false_when_bucket_missing() -> None:
+    storage = PhotoStorage()
+    storage._bucket = f"missing-bucket-{uuid7()}"
+    assert await storage.health_check() is False
