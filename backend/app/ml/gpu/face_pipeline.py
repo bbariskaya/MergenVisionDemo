@@ -386,49 +386,77 @@ class GpuFacePipeline:
                 stream=int(self._stream),
             )
 
-            selected_meta: list[tuple[int, int, np.ndarray, np.ndarray, float]] = []
-            selected_landmarks: list[np.ndarray] = []
-            for i, scaled in enumerate(scaled_list):
-                boxes_host, landmarks_host, scores_host, count = self._scaled_to_host(
-                    scaled, stream=int(self._stream)
-                )
-                if count == 0:
+            batch_selections = self._postprocess.pick_largest_device(
+                scaled_list,
+                stream=int(self._stream),
+            )
+
+            valid_host = np.empty(b, dtype=np.int32)
+            err = cuda_runtime.cudaMemcpyAsync(
+                valid_host.ctypes.data,
+                batch_selections.valid.ptr,
+                valid_host.nbytes,
+                cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                int(self._stream),
+            )
+            check_cuda(err, "batch selections valid D2H")
+            err = cuda_runtime.cudaStreamSynchronize(int(self._stream))
+            check_cuda(err, "valid sync")
+
+            pending_host: list[tuple[int, list[np.ndarray]]] = []
+            for i in range(b):
+                if not valid_host[i]:
                     continue
-                if pick_largest:
-                    areas = (boxes_host[:, 2] - boxes_host[:, 0]) * (
-                        boxes_host[:, 3] - boxes_host[:, 1]
-                    )
-                    idx = int(np.argmax(areas))
-                else:
-                    idx = 0
-                selected_meta.append(
-                    (
-                        chunk_start + i,
-                        i,
-                        boxes_host[idx],
-                        landmarks_host[idx],
-                        float(scores_host[idx]),
-                    )
+                host_row = [
+                    np.empty((4,), dtype=np.float32),
+                    np.empty((10,), dtype=np.float32),
+                    np.empty((1,), dtype=np.float32),
+                ]
+                err = cuda_runtime.cudaMemcpyAsync(
+                    host_row[0].ctypes.data,
+                    batch_selections.boxes.ptr + i * 4 * 4,
+                    4 * 4,
+                    cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                    int(self._stream),
                 )
-                selected_landmarks.append(landmarks_host[idx])
+                check_cuda(err, "selected box D2H")
+                err = cuda_runtime.cudaMemcpyAsync(
+                    host_row[1].ctypes.data,
+                    batch_selections.landmarks.ptr + i * 10 * 4,
+                    10 * 4,
+                    cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                    int(self._stream),
+                )
+                check_cuda(err, "selected landmarks D2H")
+                err = cuda_runtime.cudaMemcpyAsync(
+                    host_row[2].ctypes.data,
+                    batch_selections.scores.ptr + i * 4,
+                    1 * 4,
+                    cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                    int(self._stream),
+                )
+                check_cuda(err, "selected score D2H")
+                pending_host.append((i, host_row))
+
+            err = cuda_runtime.cudaStreamSynchronize(int(self._stream))
+            check_cuda(err, "selected rows sync")
+
+            selected_meta: list[tuple[int, int, np.ndarray, np.ndarray, float]] = [
+                (
+                    chunk_start + i,
+                    i,
+                    host_row[0],
+                    host_row[1],
+                    float(host_row[2][0]),
+                )
+                for i, host_row in pending_host
+            ]
+            selected_indices = [i for i, _ in pending_host]
 
             if not selected_meta:
                 continue
 
             m = len(selected_meta)
-            d_selected_landmarks = self._arena.reserve(
-                (m, 10), ctypes.c_float, stream=int(self._stream)
-            )
-            lm_arr = np.array(selected_landmarks, dtype=np.float32)
-            err = cuda_runtime.cudaMemcpyAsync(
-                d_selected_landmarks.ptr,
-                lm_arr.ctypes.data,
-                lm_arr.nbytes,
-                cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
-                int(self._stream),
-            )
-            check_cuda(err, "extract_batch landmarks H2D")
-
             chip_batch = self._arena.reserve(
                 (m, 3, self._cfg.embedder_input_size, self._cfg.embedder_input_size),
                 ctypes.c_float,
@@ -443,11 +471,11 @@ class GpuFacePipeline:
 
             for j, (_, img_idx, _, _, _) in enumerate(selected_meta):
                 d_landmarks = DeviceTensor(
-                    d_selected_landmarks.ptr + j * 10 * 4,
+                    batch_selections.landmarks.ptr + selected_indices[j] * 10 * 4,
                     (1, 10),
                     ctypes.c_float,
                     self._device_id,
-                    d_selected_landmarks,
+                    batch_selections.landmarks,
                     stream=int(self._stream),
                 )
                 chip = self._aligner.align(

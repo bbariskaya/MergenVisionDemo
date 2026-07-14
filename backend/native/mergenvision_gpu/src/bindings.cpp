@@ -94,6 +94,18 @@ extern "C" int mergenvision_retinaface_decode_batch(
     int* d_counters,
     cudaStream_t stream);
 
+extern "C" int mergenvision_retinaface_pick_largest(
+    const void** h_boxes_ptrs,
+    const void** h_landmarks_ptrs,
+    const void** h_scores_ptrs,
+    const int* h_counts,
+    int n,
+    float* d_out_boxes,
+    float* d_out_landmarks,
+    float* d_out_scores,
+    int* d_out_valid,
+    cudaStream_t stream);
+
 extern "C" int mergenvision_argsort_descending(
     float* d_scores,  // modified in-place
     int* d_order,
@@ -260,6 +272,28 @@ PYBIND11_MODULE(_mergenvision_gpu, m) {
        py::arg("max_candidates"),
        py::arg("out_boxes_ptr"), py::arg("out_scores_ptr"), py::arg("out_landmarks_ptr"),
        py::arg("counters_ptr"), py::arg("stream_ptr") = 0);
+
+    m.def("retinaface_pick_largest", [](
+            uintptr_t boxes_ptrs_ptr, uintptr_t landmarks_ptrs_ptr, uintptr_t scores_ptrs_ptr,
+            uintptr_t counts_ptr, int n,
+            uintptr_t out_boxes_ptr, uintptr_t out_landmarks_ptr,
+            uintptr_t out_scores_ptr, uintptr_t out_valid_ptr,
+            uintptr_t stream_ptr) {
+        check(mergenvision_retinaface_pick_largest(
+            reinterpret_cast<const void**>(boxes_ptrs_ptr),
+            reinterpret_cast<const void**>(landmarks_ptrs_ptr),
+            reinterpret_cast<const void**>(scores_ptrs_ptr),
+            reinterpret_cast<const int*>(counts_ptr),
+            n,
+            reinterpret_cast<float*>(out_boxes_ptr),
+            reinterpret_cast<float*>(out_landmarks_ptr),
+            reinterpret_cast<float*>(out_scores_ptr),
+            reinterpret_cast<int*>(out_valid_ptr),
+            int_to_stream(stream_ptr)), "retinaface_pick_largest");
+    }, py::arg("boxes_ptrs_ptr"), py::arg("landmarks_ptrs_ptr"), py::arg("scores_ptrs_ptr"),
+       py::arg("counts_ptr"), py::arg("n"),
+       py::arg("out_boxes_ptr"), py::arg("out_landmarks_ptr"), py::arg("out_scores_ptr"),
+       py::arg("out_valid_ptr"), py::arg("stream_ptr") = 0);
 
     m.def("argsort_descending", [](uintptr_t scores_ptr, uintptr_t order_ptr,
                                    int n, uintptr_t stream_ptr) {

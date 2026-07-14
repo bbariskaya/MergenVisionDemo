@@ -21,6 +21,7 @@ from mergenvision_gpu import (
     argsort_descending,
     nms,
     retinaface_decode_batch,
+    retinaface_pick_largest,
     scale_clip_compact_xy,
 )
 
@@ -72,6 +73,16 @@ class RetinaFaceScaledDetections:
     scores: DeviceTensor         # [K]
     landmarks: DeviceTensor      # [K, 10]
     count: DeviceTensor          # [1]
+
+
+@dataclass(frozen=True)
+class RetinaFaceBatchSelections:
+    """Per-image largest face selected entirely on device."""
+
+    boxes: DeviceTensor          # [B, 4]
+    scores: DeviceTensor         # [B]
+    landmarks: DeviceTensor      # [B, 10]
+    valid: DeviceTensor          # [B]  int32, 1 if a face exists
 
 
 class RetinaFacePostprocess:
@@ -318,6 +329,58 @@ class RetinaFacePostprocess:
                 )
             )
         return scaled
+
+    def pick_largest_device(
+        self,
+        scaled: list[RetinaFaceScaledDetections],
+        *,
+        stream: int | None = None,
+    ) -> RetinaFaceBatchSelections:
+        """Select the largest detection per image on the GPU.
+
+        Returns batched per-image selections.  Only a small ``valid`` mask is
+        copied back to the host; the selected boxes/landmarks/scores stay on
+        device for the recognizer pipeline.
+        """
+        active_stream = stream if stream is not None else 0
+        n = len(scaled)
+        out_boxes = self._arena.reserve((n, 4), ctypes.c_float, stream=active_stream)
+        out_landmarks = self._arena.reserve((n, 10), ctypes.c_float, stream=active_stream)
+        out_scores = self._arena.reserve((n,), ctypes.c_float, stream=active_stream)
+        out_valid = self._arena.reserve((n,), ctypes.c_int32, stream=active_stream)
+
+        boxes_ptrs = np.array([s.boxes.ptr for s in scaled], dtype=np.uint64)
+        landmarks_ptrs = np.array([s.landmarks.ptr for s in scaled], dtype=np.uint64)
+        scores_ptrs = np.array([s.scores.ptr for s in scaled], dtype=np.uint64)
+        counts = np.empty(n, dtype=np.int32)
+        for i, s in enumerate(scaled):
+            err = cuda_runtime.cudaMemcpyAsync(
+                int(counts.ctypes.data) + i * 4,
+                s.count.ptr,
+                4,
+                cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                active_stream,
+            )
+            check_cuda(err, "pick_largest count D2H")
+
+        retinaface_pick_largest(
+            boxes_ptrs.ctypes.data,
+            landmarks_ptrs.ctypes.data,
+            scores_ptrs.ctypes.data,
+            counts.ctypes.data,
+            n,
+            out_boxes.ptr,
+            out_landmarks.ptr,
+            out_scores.ptr,
+            out_valid.ptr,
+            active_stream,
+        )
+        return RetinaFaceBatchSelections(
+            boxes=out_boxes,
+            landmarks=out_landmarks,
+            scores=out_scores,
+            valid=out_valid,
+        )
 
     def _empty(
         self,

@@ -18,6 +18,7 @@ pybind11_add_module(_mergenvision_gpu
     src/retinaface_decode.cu
     src/scale_clip_compact.cu
     src/scale_clip_compact_xy.cu
+    src/retinaface_pick_largest.cu
     src/argsort.cu
     src/warp_align.cu
 )
