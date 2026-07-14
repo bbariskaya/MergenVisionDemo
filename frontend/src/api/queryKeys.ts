@@ -9,4 +9,6 @@ export const queryKeys = {
     ['faces', params] as const,
   process: (processId: string) => ['process', processId] as const,
   enrollmentStats: () => ['stats', 'enrollment'] as const,
+  bulkJob: (jobId: string) => ['bulk-job', jobId] as const,
+  latestBulkJob: () => ['bulk-job', 'latest'] as const,
 }

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { Activity, LayoutDashboard, ScanFace, UserPlus, Users, X } from 'lucide-react'
+import { Activity, Database, LayoutDashboard, ScanFace, UserPlus, Users, X } from 'lucide-react'
 import { Link, useLocation } from 'react-router'
 
 export interface SidebarProps {
@@ -20,7 +20,10 @@ const mainItems: NavItem[] = [
   { to: '/search-face', label: 'Kişiler', icon: Users },
 ]
 
-const adminItems: NavItem[] = [{ to: '/system', label: 'Sistem Durumu', icon: Activity }]
+const adminItems: NavItem[] = [
+  { to: '/bulk-enrollment', label: 'Toplu Kayıt İşlemi', icon: Database },
+  { to: '/system', label: 'Sistem Durumu', icon: Activity },
+]
 
 export function Sidebar({ mobileOpen, onClose }: SidebarProps) {
   const location = useLocation()

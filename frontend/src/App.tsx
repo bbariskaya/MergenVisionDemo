@@ -2,6 +2,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Layout } from '@/components/Layout'
 import { ToastContainer } from '@/components/Toast'
 import { useToast } from '@/hooks/useToast'
+import BulkEnrollmentPage from '@/pages/BulkEnrollmentPage'
 import DashboardPage from '@/pages/DashboardPage'
 import EnrollPage from '@/pages/EnrollPage'
 import FaceDetailPage from '@/pages/FaceDetailPage'
@@ -23,6 +24,7 @@ function AppContent() {
         <Route path="/enroll" element={<EnrollPage onToast={addToast} />} />
         <Route path="/identify" element={<IdentifyPage onToast={addToast} />} />
         <Route path="/search-face" element={<FaceSearchPage />} />
+        <Route path="/bulk-enrollment" element={<BulkEnrollmentPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/system" element={<SystemStatusPage />} />
         <Route path="/faces/:faceId" element={<FaceDetailPage onToast={addToast} />} />

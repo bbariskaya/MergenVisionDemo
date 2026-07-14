@@ -7,6 +7,7 @@ pipeline instance warm across batches.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import io
 import os
@@ -21,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import settings
 from app.core.ids import (
@@ -34,11 +36,16 @@ from app.infrastructure import db as db_module
 from app.infrastructure.minio import PhotoStorage
 from app.infrastructure.qdrant import FaceVectorStore
 from app.ml.gpu.face_pipeline import GpuFacePipeline
-from app.services.bulk_enrollment import BulkEnrollmentService
+from app.services.bulk_enrollment import BulkEnrollmentService, EnrollmentCancelled
 from app.services.bulk_manifest import (
     EnrollmentIdentity,
     EnrollmentPhoto,
     build_lfw_manifest,
+)
+from app.services.vggface_manifest import (
+    stream_vggface_manifest,
+    vggface_preflight,
+    shard_vggface_identities,
 )
 from app.services.readiness import ReadinessService
 
@@ -49,6 +56,7 @@ def _utc_now() -> datetime:
 
 _WORKER_ID = os.environ.get("WORKER_ID", "gpu-worker-0")
 _HOST_DEVICE_ID_VAR = os.environ.get("HOST_GPU_DEVICE_ID", "0")
+_WORKER_ROLE = os.environ.get("WORKER_ROLE", "online")
 
 
 class _ApiModel(BaseModel):
@@ -56,7 +64,7 @@ class _ApiModel(BaseModel):
 
 
 class SourceDescriptor(_ApiModel):
-    type: Literal["local_lfw", "synthetic", "manifest"] = Field(alias="type")
+    type: Literal["local_lfw", "local_vggface", "synthetic", "manifest"] = Field(alias="type")
     path: str | None = Field(alias="path", default=None)
     bucket: str | None = Field(alias="bucket", default=None)
     minio_prefix: str | None = Field(alias="minioPrefix", default=None)
@@ -64,17 +72,19 @@ class SourceDescriptor(_ApiModel):
     num_identities: int | None = Field(alias="numIdentities", default=None)
     photos_per_identity: int | None = Field(alias="photosPerIdentity", default=None)
     identities: list[dict[str, Any]] | None = Field(alias="identities", default=None)
+    resume_after_identity_key: str | None = Field(alias="resumeAfterIdentityKey", default=None)
 
 
 class JobCreateRequest(_ApiModel):
     job_id: str = Field(alias="jobId")
     idempotency_key: str = Field(alias="idempotencyKey")
     source: SourceDescriptor
-    dataset_type: Literal["lfw", "synthetic"] = Field(alias="datasetType")
+    dataset_type: Literal["lfw", "vggface", "synthetic"] = Field(alias="datasetType")
     mode: Literal["import", "benchmark"] = Field(alias="mode")
     requested_parallelism: int = Field(alias="requestedParallelism", default=1)
     assigned_workers: list[str] | None = Field(alias="assignedWorkers", default=None)
     shard_index: int | None = Field(alias="shardIndex", default=None)
+    max_photos: int | None = Field(alias="maxPhotos", default=None)
 
 
 class JobStatusResponse(_ApiModel):
@@ -212,7 +222,11 @@ def _load_manifest_identities(payload: SourceDescriptor) -> tuple[EnrollmentIden
     return tuple(result)
 
 
-async def _load_identities(payload: SourceDescriptor) -> tuple[EnrollmentIdentity, ...]:
+async def _load_identities(
+    payload: SourceDescriptor,
+    shard_index: int = 0,
+    num_shards: int = 1,
+) -> tuple[EnrollmentIdentity, ...]:
     if payload.type == "manifest":
         return _load_manifest_identities(payload)
     if payload.type == "synthetic":
@@ -221,17 +235,37 @@ async def _load_identities(payload: SourceDescriptor) -> tuple[EnrollmentIdentit
             payload.num_identities or 3,
             payload.photos_per_identity or 1,
         )
-    if payload.type != "local_lfw":
+    if payload.type == "local_vggface":
+        if not payload.path:
+            raise ValueError("local_vggface source requires path")
+        root = Path(payload.path)
+        if not root.is_dir():
+            raise ValueError(f"vggface root not found: {root}")
+        identities = stream_vggface_manifest(
+            root,
+            shard_index=shard_index if num_shards > 1 else None,
+            num_shards=num_shards if num_shards > 1 else None,
+            resume_after_identity_key=payload.resume_after_identity_key,
+        )
+    elif payload.type == "local_lfw":
+        if not payload.path:
+            raise ValueError("local_lfw source requires path")
+        root = Path(payload.path)
+        if not root.is_dir():
+            raise ValueError(f"lfw root not found: {root}")
+        identities = build_lfw_manifest(root)
+        if payload.max_identities is not None:
+            identities = identities[: payload.max_identities]
+    else:
         raise ValueError(f"unsupported source type: {payload.type}")
-    if not payload.path:
-        raise ValueError("local_lfw source requires path")
-    root = Path(payload.path)
-    if not root.is_dir():
-        raise ValueError(f"lfw root not found: {root}")
-    identities = build_lfw_manifest(root)
-    if payload.max_identities is not None:
-        identities = identities[: payload.max_identities]
-    return identities
+
+    if num_shards > 1:
+        identities = shard_vggface_identities(
+            iter(identities), shard_index, num_shards
+        )
+
+    # Materialize the shard so the enrollment service can iterate it twice.
+    return tuple(identities)
 
 
 def _job_status_response(
@@ -255,6 +289,10 @@ def _job_status_response(
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(max_workers=128)
+    )
     db_module.configure_engine()
 
     host_device_id, host_gpu_uuid = await _ensure_single_gpu_visible()
@@ -290,6 +328,7 @@ async def _lifespan(app: FastAPI):
             vector_store=vector_store,
         )
         app.state.current_job_id: str | None = None
+        app.state.cancel_requested = False
 
         yield
     finally:
@@ -347,6 +386,12 @@ def create_worker_app() -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="idempotency_key is required",
+            )
+
+        if _WORKER_ROLE == "online" and job.dataset_type in {"lfw", "vggface"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="bulk enrollment is prohibited on the online-only worker",
             )
 
         process_id = _deterministic_process_id(job.idempotency_key)
@@ -409,6 +454,45 @@ def create_worker_app() -> FastAPI:
 
         return await _run_job(request, job, process_id)
 
+    @app.post("/internal/v1/jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+    async def cancel_job(
+        job_id: uuid.UUID,
+        request: Request,
+    ) -> JobStatusResponse:
+        async with db_module.AsyncSessionLocal() as session:
+            record = await session.get(ProcessRecord, job_id)
+            if record is None or record.process_type != "gpu_worker_job":
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
+                )
+            if request.app.state.current_job_id != str(job_id):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="job is not running on this worker",
+                )
+            request.app.state.cancel_requested = True
+            if record.status in ("pending", "queued", "running"):
+                record.status = "cancel_requested"
+                record.updated_at = _utc_now()
+                session.add(
+                    _event(
+                        job_id,
+                        100,
+                        "cancel_requested",
+                        record.status,
+                        "cancel_requested",
+                        message=f"cancel requested on {_WORKER_ID}",
+                    )
+                )
+            await session.commit()
+            return _job_status_response(record, JobCreateRequest(
+                job_id=str(job_id),
+                idempotency_key=record.summary.get("idempotency_key", str(job_id)),
+                source=SourceDescriptor(type="manifest"),
+                dataset_type=record.summary.get("dataset_type", "lfw"),
+                mode=record.summary.get("mode", "import"),
+            ), request.app.state.worker_info)
+
     async def _run_job(
         request: Request,
         job: JobCreateRequest,
@@ -437,7 +521,19 @@ def create_worker_app() -> FastAPI:
                 )
                 await session.commit()
 
-            identities = await _load_identities(job.source)
+            identities = await _load_identities(
+                job.source,
+                shard_index=job.shard_index or 0,
+                num_shards=job.requested_parallelism or 1,
+            )
+
+            async def _report_progress(progress: dict[str, Any]) -> None:
+                async with db_module.AsyncSessionLocal() as session:
+                    rec = await session.get(ProcessRecord, process_id)
+                    if rec is not None:
+                        rec.summary["progress"] = progress
+                        flag_modified(rec, "summary")
+                        await session.commit()
 
             async with db_module.AsyncSessionLocal() as session:
                 service = BulkEnrollmentService(
@@ -446,12 +542,15 @@ def create_worker_app() -> FastAPI:
                     vector_store=request.app.state.vector_store,
                     pipeline=request.app.state.pipeline,
                     pipeline_lock=request.app.state.pipeline_lock,
-                    qdrant_wait=True,
+                    qdrant_wait=False,
                 )
                 result = await service.enroll_shard(
                     identities,
                     parent_process_id=process_id,
                     idempotency_key=job.idempotency_key,
+                    cancel_check=lambda: request.app.state.cancel_requested,
+                    progress_callback=_report_progress,
+                    max_photos=job.max_photos,
                 )
 
             async with db_module.AsyncSessionLocal() as session:
@@ -465,7 +564,12 @@ def create_worker_app() -> FastAPI:
                     "faces_duplicate": result.faces_duplicate,
                     "no_face": result.no_face,
                     "errors": result.errors,
+                    "total_scanned": result.total_scanned,
+                    "total_processed": result.total_processed,
+                    "extraction_ms": result.extraction_ms,
+                    "io_ms": result.io_ms,
                 }
+                flag_modified(record, "summary")
                 session.add(
                     _event(
                         process_id,
@@ -483,6 +587,26 @@ def create_worker_app() -> FastAPI:
                 await session.commit()
                 return _job_status_response(record, job, request.app.state.worker_info)
 
+        except EnrollmentCancelled:
+            async with db_module.AsyncSessionLocal() as session:
+                record = await session.get(ProcessRecord, process_id)
+                if record is not None and record.status != "cancelled":
+                    record.status = "cancelled"
+                    record.completed_at = _utc_now()
+                    flag_modified(record, "summary")
+                    session.add(
+                        _event(
+                            process_id,
+                            2,
+                            "cancelled",
+                            "running",
+                            "cancelled",
+                            message=f"job cancelled on {_WORKER_ID}",
+                        )
+                    )
+                    await session.commit()
+                return _job_status_response(record, job, request.app.state.worker_info)
+
         except Exception as exc:
             async with db_module.AsyncSessionLocal() as session:
                 record = await session.get(ProcessRecord, process_id)
@@ -490,6 +614,7 @@ def create_worker_app() -> FastAPI:
                     record.status = "failed"
                     record.completed_at = _utc_now()
                     record.error_message = str(exc)[:500]
+                    flag_modified(record, "summary")
                     session.add(
                         _event(
                             process_id,
@@ -504,6 +629,7 @@ def create_worker_app() -> FastAPI:
                 return _job_status_response(record, job, request.app.state.worker_info)
         finally:
             request.app.state.current_job_id = None
+            request.app.state.cancel_requested = False
 
     @app.get("/internal/v1/jobs/{job_id}")
     async def get_job(

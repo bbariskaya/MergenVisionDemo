@@ -147,3 +147,48 @@ class FaceListResponse(_ApiModel):
     total: int
     limit: int
     offset: int
+
+
+class BulkJobShard(_ApiModel):
+    worker_id: str = Field(alias="workerId")
+    shard_index: int = Field(alias="shardIndex")
+    process_id: uuid.UUID = Field(alias="processId")
+    status: str
+    progress: dict[str, Any] = Field(default_factory=dict)
+
+
+class VggfaceBulkJobResponse(_ApiModel):
+    job_id: uuid.UUID = Field(alias="jobId")
+    status: str
+    dataset_type: str = Field(alias="datasetType")
+    assigned_workers: list[str] = Field(alias="assignedWorkers")
+    target_total_active_photos: int = Field(alias="targetTotalActivePhotos")
+    starting_active_photos: int = Field(alias="startingActivePhotos")
+    current_active_photos: int = Field(alias="currentActivePhotos")
+    photos_added_by_job: int = Field(alias="photosAddedByJob")
+    requested_photos: int = Field(alias="requestedPhotos")
+    total_discovered: int = Field(alias="totalDiscovered", default=0)
+    total_scanned: int = Field(alias="totalScanned", default=0)
+    total_processed: int = Field(alias="totalProcessed", default=0)
+    total_enrolled: int = Field(alias="totalEnrolled")
+    total_duplicate: int = Field(alias="totalDuplicate")
+    total_no_face: int = Field(alias="totalNoFace")
+    total_errors: int = Field(alias="totalErrors")
+    total_in_flight: int = Field(alias="totalInFlight", default=0)
+    total_rejected: int = Field(alias="totalRejected", default=0)
+    total_corrupt: int = Field(alias="totalCorrupt", default=0)
+    elapsed_seconds: float = Field(alias="elapsedSeconds")
+    avg_photos_per_second: float = Field(alias="avgPhotosPerSecond")
+    scanned_photos_per_second: float = Field(alias="scannedPhotosPerSecond", default=0.0)
+    processed_photos_per_second: float = Field(alias="processedPhotosPerSecond", default=0.0)
+    enrolled_photos_per_second: float = Field(alias="enrolledPhotosPerSecond", default=0.0)
+    duplicate_photos_per_second: float = Field(alias="duplicatePhotosPerSecond", default=0.0)
+    probe_p50_ms: float | None = Field(alias="probeP50Ms", default=None)
+    probe_p95_ms: float | None = Field(alias="probeP95Ms", default=None)
+    shards: list[BulkJobShard]
+    created_at: datetime = Field(alias="createdAt")
+    completed_at: datetime | None = Field(alias="completedAt", default=None)
+
+
+class VggfaceBulkJobStartRequest(_ApiModel):
+    max_photos: int | None = Field(alias="maxPhotos", default=None)

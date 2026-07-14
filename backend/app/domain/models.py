@@ -294,7 +294,9 @@ class ProcessRecord(Base):
     __table_args__ = (
         sa.Index("ix_process_record_status_started", "status", sa.desc("started_at")),
         sa.Index("ix_process_record_type_started", "process_type", sa.desc("started_at")),
-        sa.CheckConstraint("status IN ('pending','running','completed','failed')"),
+        sa.CheckConstraint(
+            "status IN ('pending','queued','running','cancel_requested','cancelling','cancelled','completed','failed')"
+        ),
     )
 
 
@@ -327,9 +329,9 @@ class ProcessEvent(Base):
     __table_args__ = (
         sa.Index("ix_process_event_process_sequence", "process_id", "sequence"),
         sa.CheckConstraint(
-            "status_before IS NULL OR status_before IN ('pending','running','completed','failed')"
+            "status_before IS NULL OR status_before IN ('pending','queued','running','cancel_requested','cancelling','cancelled','completed','failed')"
         ),
         sa.CheckConstraint(
-            "status_after IS NULL OR status_after IN ('pending','running','completed','failed')"
+            "status_after IS NULL OR status_after IN ('pending','queued','running','cancel_requested','cancelling','cancelled','completed','failed')"
         ),
     )

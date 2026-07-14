@@ -230,6 +230,7 @@ class FaceService:
                 name=known_name,
                 metadata=known_metadata,
                 person_name_map=person_name_map,
+                person_identity_map=person_identity_map,
             )
             face_dicts.append(face_dict)
 
@@ -1057,9 +1058,12 @@ class FaceService:
         name: str | None,
         metadata: dict[str, Any] | None,
         person_name_map: dict[uuid.UUID, str] | None = None,
+        person_identity_map: dict[uuid.UUID, uuid.UUID] | None = None,
     ) -> dict[str, Any]:
         if person_name_map is None:
             person_name_map = {}
+        if person_identity_map is None:
+            person_identity_map = {}
         return {
             "face_index": face_index,
             "face_id": face_id,
@@ -1074,6 +1078,7 @@ class FaceService:
             "candidates": [
                 {
                     **_hit_to_dict(hit),
+                    "face_id": person_identity_map.get(hit.person_id, hit.sample_id),
                     "name": person_name_map.get(hit.person_id),
                 }
                 for hit in candidates

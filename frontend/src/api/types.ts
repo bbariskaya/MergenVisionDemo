@@ -144,6 +144,37 @@ export interface EnrollmentStats {
   activePersonCount: number
 }
 
+export interface BulkJobShard {
+  workerId: string
+  shardIndex: number
+  processId: UUID
+  status: string
+  progress: Record<string, unknown>
+}
+
+export interface VggfaceBulkJob {
+  jobId: UUID
+  status: string
+  datasetType: string
+  assignedWorkers: string[]
+  targetTotalActivePhotos: number
+  startingActivePhotos: number
+  currentActivePhotos: number
+  photosAddedByJob: number
+  requestedPhotos: number
+  totalEnrolled: number
+  totalDuplicate: number
+  totalNoFace: number
+  totalErrors: number
+  elapsedSeconds: number
+  avgPhotosPerSecond: number
+  probeP50Ms: number | null
+  probeP95Ms: number | null
+  shards: BulkJobShard[]
+  createdAt: string
+  completedAt: string | null
+}
+
 export interface HealthComponent {
   name: string
   status: string

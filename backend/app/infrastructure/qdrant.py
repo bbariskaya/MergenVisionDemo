@@ -244,12 +244,21 @@ class FaceVectorStore:
     async def set_active(
         self, sample_id: uuid.UUID, active: bool
     ) -> None:
-        await self._client.set_payload(
-            collection_name=self._collection,
-            points=[str(sample_id)],
-            payload={self._active_field: active},
-            wait=True,
-        )
+        await self.set_active_batch([sample_id], active)
+
+    async def set_active_batch(
+        self, sample_ids: list[uuid.UUID], active: bool
+    ) -> None:
+        if not sample_ids:
+            return
+        batch_size = 256
+        for i in range(0, len(sample_ids), batch_size):
+            await self._client.set_payload(
+                collection_name=self._collection,
+                points=[str(s) for s in sample_ids[i : i + batch_size]],
+                payload={self._active_field: active},
+                wait=True,
+            )
 
     async def delete(self, sample_id: uuid.UUID) -> None:
         await self._client.delete(
