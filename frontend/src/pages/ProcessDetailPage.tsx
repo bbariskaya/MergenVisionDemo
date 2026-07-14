@@ -2,8 +2,9 @@ import { useProcess } from '@/api/processes'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import { SimilarityScore } from '@/components/ui/SimilarityScore'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { cn, formatDate, mapProcessStatus, mapRecognizeStatus } from '@/lib/utils'
+import { formatDate, mapProcessStatus, mapRecognizeStatus } from '@/lib/utils'
 import { Link, useParams } from 'react-router'
 
 export default function ProcessDetailPage() {
@@ -79,14 +80,12 @@ export default function ProcessDetailPage() {
                   <Badge status={face.status}>{mapRecognizeStatus(face.status)}</Badge>
                 </div>
                 {face.score !== null && (
-                  <p className="text-sm text-slate-600">
-                    Skor: <span className="font-medium text-primary">{(face.score * 100).toFixed(1)}%</span>
-                  </p>
+                  <SimilarityScore score={face.score} size="sm" showDecision={false} />
                 )}
                 {face.faceId ? (
                   <Link
                     to={`/faces/${face.faceId}`}
-                    className={cn('mt-3 inline-block text-sm font-medium text-primary hover:underline')}
+                    className="mt-3 inline-block text-sm font-medium text-primary hover:underline"
                   >
                     Yüz Detayını Gör
                   </Link>

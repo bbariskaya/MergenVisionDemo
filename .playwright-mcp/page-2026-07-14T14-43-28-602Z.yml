@@ -1,0 +1,39 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - button "Menüyü aç" [ref=e7] [cursor=pointer]
+      - navigation "Breadcrumb" [ref=e9]:
+        - list [ref=e10]:
+          - listitem [ref=e11]: Ana Sayfa
+    - button "Kontrol ediliyor" [ref=e13] [cursor=pointer]
+  - main [ref=e19]:
+    - generic [ref=e20]:
+      - generic [ref=e21]:
+        - generic [ref=e22]:
+          - heading "Operasyon Merkezi" [level=1] [ref=e23]
+          - paragraph [ref=e24]: Yüz tanıma ve kayıt işlemlerinizi yönetin.
+        - generic [ref=e25]:
+          - paragraph [ref=e28]: Sistem Sağlığı
+          - link [ref=e31] [cursor=pointer]:
+            - /url: /enroll
+            - generic [ref=e32]:
+              - heading "Kayıt Yap" [level=3] [ref=e37]
+              - paragraph [ref=e38]: Yeni kişi ve yüz kaydı oluşturun.
+          - link [ref=e39] [cursor=pointer]:
+            - /url: /identify
+            - generic [ref=e40]:
+              - heading "Yüz Tanı" [level=3] [ref=e48]
+              - paragraph [ref=e49]: Bir görseldeki yüzleri tanıyın.
+          - link [ref=e50] [cursor=pointer]:
+            - /url: /search-face
+            - generic [ref=e51]:
+              - heading "Kayıtlı Kişiler" [level=3] [ref=e55]
+              - paragraph [ref=e56]: Kayıtlı yüzleri görüntüleyin.
+        - generic [ref=e62]:
+          - heading "Sistem Durumu" [level=3] [ref=e65]
+          - generic [ref=e71]:
+            - heading "Hızlı Bilgi" [level=3] [ref=e73]
+            - generic [ref=e74]:
+              - paragraph [ref=e75]: Kayıt yaparak kişileri veritabanına ekleyin. Tanıma ekranında bir görsel yükleyerek eşleşmeleri görün.
+              - paragraph [ref=e76]: Dashboard üzerindeki sayılar anlık olarak enrollment/statistics endpoint’inden gelir.
+      - region "Bildirimler"

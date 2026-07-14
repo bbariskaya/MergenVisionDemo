@@ -21,6 +21,7 @@ pybind11_add_module(_mergenvision_gpu
     src/retinaface_pick_largest.cu
     src/argsort.cu
     src/warp_align.cu
+    src/test_helpers.cu
 )
 
 target_include_directories(_mergenvision_gpu PRIVATE include)

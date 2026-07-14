@@ -1,0 +1,32 @@
+- generic [ref=f2e4]:
+  - banner [ref=f2e5]:
+    - generic [ref=f2e6]:
+      - button "Menüyü aç" [ref=f2e7] [cursor=pointer]
+      - navigation "Breadcrumb" [ref=f2e9]:
+        - list [ref=f2e10]:
+          - listitem [ref=f2e11]: Yüz Tanı
+    - button "Kontrol ediliyor" [ref=f2e13] [cursor=pointer]
+  - main [ref=f2e19]:
+    - generic [ref=f2e20]:
+      - generic [ref=f2e21]:
+        - generic [ref=f2e22]:
+          - heading "Yüz Tanı" [level=1] [ref=f2e23]
+          - paragraph [ref=f2e24]: Bir görsel yükleyerek kayıtlı kişilerle eşleştirin.
+        - generic [ref=f2e25]:
+          - generic [ref=f2e28]:
+            - generic [ref=f2e29]:
+              - paragraph [ref=f2e30]: Görsel Yükle
+              - button "Görsel Yükle" [ref=f2e31] [cursor=pointer]:
+                - paragraph [ref=f2e35]: Görsel seçin veya sürükleyin
+                - paragraph [ref=f2e36]: Sürükleyip bırakın veya tıklayın. JPEG/PNG, max 10 MB.
+                - button [ref=f2e37]
+            - generic [ref=f2e38]:
+              - generic [ref=f2e39]:
+                - generic [ref=f2e40]: Sonuç Sayısı (Top-K)
+                - spinbutton "Sonuç Sayısı (Top-K)" [ref=f2e41]: "5"
+              - generic [ref=f2e42]:
+                - generic [ref=f2e43]: Eşik Değer
+                - spinbutton "Eşik Değer" [ref=f2e44]: "0.6"
+            - button "Tanı" [disabled]
+          - paragraph [ref=f2e52]: Başlamak için sol taraftan bir görsel yükleyin.
+      - region "Bildirimler"

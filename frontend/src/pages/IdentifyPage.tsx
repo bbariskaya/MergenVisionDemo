@@ -1,12 +1,14 @@
 import { useRecognizeMutation } from '@/api/faces'
 import type { RecognizeResponse, RecognizedFace } from '@/api/types'
+import { PageHeader } from '@/components/PageHeader'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent } from '@/components/ui/Card'
 import { FileDropzone } from '@/components/ui/FileDropzone'
+import { SimilarityScore } from '@/components/ui/SimilarityScore'
 import { useToast } from '@/hooks/useToast'
-import { cn, clamp, mapRecognizeStatus } from '@/lib/utils'
-import { Loader2, Search, UserCheck, UserX } from 'lucide-react'
+import { cn, clamp, formatSimilarity, mapRecognizeStatus } from '@/lib/utils'
+import { ArrowLeft, ImageIcon, Loader2, RotateCcw, ScanFace, Search, User, UserCheck } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
@@ -14,13 +16,11 @@ export interface IdentifyPageProps {
   onToast?: (toast: { variant: 'success' | 'error' | 'info'; title: string; message?: string }) => void
 }
 
-const PALETTE = [
-  'border-emerald-500 bg-emerald-500/10 text-emerald-700',
-  'border-blue-500 bg-blue-500/10 text-blue-700',
-  'border-amber-500 bg-amber-500/10 text-amber-700',
-  'border-purple-500 bg-purple-500/10 text-purple-700',
-  'border-pink-500 bg-pink-500/10 text-pink-700',
-  'border-cyan-500 bg-cyan-500/10 text-cyan-700',
+const OVERLAY_STYLES = [
+  { border: 'border-primary', bg: 'bg-primary/10', text: 'text-primary-700', chipBg: 'bg-primary', chipText: 'text-white' },
+  { border: 'border-navy-400', bg: 'bg-navy-100/50', text: 'text-navy-700', chipBg: 'bg-navy-600', chipText: 'text-white' },
+  { border: 'border-success', bg: 'bg-success/10', text: 'text-emerald-700', chipBg: 'bg-success', chipText: 'text-white' },
+  { border: 'border-warning', bg: 'bg-warning/10', text: 'text-amber-700', chipBg: 'bg-warning', chipText: 'text-white' },
 ]
 
 export default function IdentifyPage({ onToast }: IdentifyPageProps) {
@@ -53,6 +53,7 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!file) return
+    setResult(null)
     try {
       const data = await recognize.mutateAsync({ image: file, topK, threshold })
       setResult(data)
@@ -88,23 +89,49 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
     })
   }
 
-  const faceColors = result?.faces.map((_, i) => PALETTE[i % PALETTE.length]) || []
+  const faceStyles = result?.faces.map((_, i) => OVERLAY_STYLES[i % OVERLAY_STYLES.length]) || []
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="page-title">Yüz Tanı</h1>
-        <p className="mt-1 text-slate-500">Bir görsel yükleyerek kayıtlı yüzlerle eşleştirin.</p>
-      </div>
+      <PageHeader
+        title="Yüz Tanıma"
+        subtitle="Bir görsel yükleyerek kayıtlı kişilerle eşleştirin."
+        action={
+          result && (
+            <Button type="button" variant="secondary" onClick={reset}>
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Yeni Görsel
+            </Button>
+          )
+        }
+      />
 
       <form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-1">
-          <Card>
-            <CardContent className="space-y-4">
-              <FileDropzone value={file} onChange={setFile} previewUrl={previewUrl} />
+          <Card className="overflow-hidden">
+            <CardContent className="space-y-5 p-5">
+              {previewUrl ? (
+                <div className="relative overflow-hidden rounded-lg border border-navy-200">
+                  <img
+                    src={previewUrl}
+                    alt="Sorgu görseli"
+                    className="max-h-64 w-full object-contain"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setFile(null)}
+                    className="absolute right-2 top-2 rounded bg-white/90 px-2 py-1 text-xs font-medium text-navy-700 shadow-sm hover:bg-white focus-visible:ring-primary"
+                  >
+                    Değiştir
+                  </button>
+                </div>
+              ) : (
+                <FileDropzone value={file} onChange={setFile} previewUrl={previewUrl} label="Görsel Yükle" />
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label htmlFor="topK" className="label">Sonuç Sayısı (Top-K)</label>
+                  <label htmlFor="topK" className="label">Sonuç Sayısı</label>
                   <input
                     id="topK"
                     type="number"
@@ -116,7 +143,7 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
                   />
                 </div>
                 <div>
-                  <label htmlFor="threshold" className="label">Eşik Değer</label>
+                  <label htmlFor="threshold" className="label">Karar Eşiği</label>
                   <input
                     id="threshold"
                     type="number"
@@ -129,34 +156,41 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
                   />
                 </div>
               </div>
+
               <Button type="submit" className="w-full" isLoading={recognize.isPending} disabled={!file}>
-                <Search className="mr-2 h-4 w-4" />
-                Tanı
+                <ScanFace className="mr-2 h-4 w-4" />
+                {recognize.isPending ? 'Tanıma yapılıyor…' : 'Yüzleri Tanı'}
               </Button>
-              {result && (
-                <Button type="button" variant="ghost" className="w-full" onClick={reset}>
-                  Yeni Görsel
-                </Button>
-              )}
+
+              <p className="text-xs leading-relaxed text-navy-400">
+                Yüklenen görseller sadece tanıma işlemi için kullanılır ve saklanmaz.
+              </p>
             </CardContent>
           </Card>
 
-          {result && (
-            <ResultSummary result={result} />
-          )}
+          {result && <ResultSummary result={result} threshold={threshold} />}
         </div>
 
         <div className="lg:col-span-2">
-          <Card className="h-full">
-            <CardContent className="relative">
+          <Card className="h-full min-h-[360px]">
+            <CardContent className="relative h-full p-0">
               {recognize.isPending ? (
-                <div className="flex min-h-[320px] flex-col items-center justify-center text-slate-500">
-                  <Loader2 className="mb-3 h-10 w-10 animate-spin text-primary" aria-hidden="true" />
-                  <p className="font-medium">Yüzler tanınıyor…</p>
-                  <p className="text-sm">Bu işlem birkaç saniye sürebilir.</p>
+                <div className="relative flex h-full min-h-[360px] items-center justify-center overflow-hidden rounded-xl">
+                  {previewUrl && (
+                    <img
+                      src={previewUrl}
+                      alt="Sorgu görseli"
+                      className="absolute inset-0 h-full w-full object-contain opacity-40"
+                    />
+                  )}
+                  <div className="relative z-10 flex flex-col items-center text-navy-600">
+                    <Loader2 className="mb-3 h-10 w-10 animate-spin text-primary" aria-hidden="true" />
+                    <p className="font-medium">Yüzler tanınıyor…</p>
+                    <p className="text-sm">Bu işlem birkaç saniye sürebilir.</p>
+                  </div>
                 </div>
               ) : previewUrl ? (
-                <div className="relative mx-auto inline-block max-w-full">
+                <div className="relative mx-auto inline-block max-w-full p-4">
                   <img
                     ref={imageRef}
                     src={previewUrl}
@@ -169,7 +203,7 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
                       key={face.faceIndex}
                       face={face}
                       index={i}
-                      colorClass={faceColors[i]}
+                      style={faceStyles[i]}
                       isSelected={selectedFace === i}
                       onClick={() => setSelectedFace(i)}
                       imageSize={imageSize}
@@ -177,9 +211,12 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
                   ))}
                 </div>
               ) : (
-                <div className="flex min-h-[320px] flex-col items-center justify-center text-slate-400">
-                  <Search className="mb-2 h-12 w-12" aria-hidden="true" />
-                  <p>Başlamak için sol taraftan bir görsel yükleyin.</p>
+                <div className="flex min-h-[360px] flex-col items-center justify-center text-navy-400">
+                  <div className="mb-3 rounded-full bg-navy-50 p-3 text-navy-300">
+                    <ImageIcon className="h-8 w-8" aria-hidden="true" />
+                  </div>
+                  <p className="font-medium text-navy-600">Başlamak için sol taraftan bir görsel yükleyin.</p>
+                  <p className="text-sm">JPEG veya PNG, maksimum 10 MB.</p>
                 </div>
               )}
             </CardContent>
@@ -194,9 +231,10 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
               key={face.faceIndex}
               face={face}
               index={i}
-              colorClass={faceColors[i]}
+              style={faceStyles[i]}
               isSelected={selectedFace === i}
               onClick={() => setSelectedFace(i)}
+              threshold={threshold}
             />
           ))}
         </div>
@@ -211,29 +249,33 @@ export default function IdentifyPage({ onToast }: IdentifyPageProps) {
   )
 }
 
-function ResultSummary({ result }: { result: RecognizeResponse }) {
+function ResultSummary({ result, threshold }: { result: RecognizeResponse; threshold: number }) {
   const known = result.faces.filter((f) => f.status === 'known').length
   const unknown = result.faces.length - known
   return (
     <Card>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-4 p-5">
         <h3 className="font-semibold text-navy-900">Sonuç Özeti</h3>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-slate-500">Toplam Yüz</span>
-          <span className="font-medium">{result.faceCount}</span>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div className="rounded-lg bg-navy-50 p-2">
+            <p className="text-lg font-bold text-navy-900">{result.faceCount}</p>
+            <p className="text-[10px] uppercase tracking-wide text-navy-500">Yüz</p>
+          </div>
+          <div className="rounded-lg bg-successSubtle p-2">
+            <p className="text-lg font-bold text-success">{known}</p>
+            <p className="text-[10px] uppercase tracking-wide text-navy-500">Eşleşen</p>
+          </div>
+          <div className="rounded-lg bg-navy-50 p-2">
+            <p className="text-lg font-bold text-navy-900">{unknown}</p>
+            <p className="text-[10px] uppercase tracking-wide text-navy-500">Bilinmeyen</p>
+          </div>
         </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-slate-500">Bulundu</span>
-          <span className="font-medium text-emerald-600">{known}</span>
+        <div className="flex items-center justify-between border-t border-navy-100 pt-3 text-sm">
+          <span className="text-navy-500">Karar eşiği</span>
+          <span className="font-medium tabular-nums text-navy-900">{threshold.toFixed(2)}</span>
         </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-slate-500">Bulunamadı</span>
-          <span className="font-medium text-slate-600">{unknown}</span>
-        </div>
-        <Link to={`/processes/${result.processId}`} className="block pt-2">
-          <Button variant="secondary" className="w-full">
-            İşlem Detayını Gör
-          </Button>
+        <Link to={`/processes/${result.processId}`} className="btn-secondary block w-full text-center text-xs px-3 py-2">
+          İşlem Detayını Gör
         </Link>
       </CardContent>
     </Card>
@@ -243,14 +285,14 @@ function ResultSummary({ result }: { result: RecognizeResponse }) {
 function FaceOverlay({
   face,
   index,
-  colorClass,
+  style,
   isSelected,
   onClick,
   imageSize,
 }: {
   face: RecognizedFace
   index: number
-  colorClass: string
+  style: (typeof OVERLAY_STYLES)[number]
   isSelected: boolean
   onClick: () => void
   imageSize: { width: number; height: number; naturalWidth: number; naturalHeight: number }
@@ -268,9 +310,9 @@ function FaceOverlay({
       type="button"
       onClick={onClick}
       className={cn(
-        'absolute border-2 transition-all duration-150 focus:outline-none',
-        colorClass,
-        isSelected ? 'ring-2 ring-offset-2' : 'opacity-80 hover:opacity-100',
+        'absolute border-2 bg-transparent transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
+        style.border,
+        isSelected ? 'ring-2 ring-offset-2 ring-primary' : 'opacity-80 hover:opacity-100',
       )}
       style={{ left, top, width, height }}
       aria-label={`Yüz ${index + 1}: ${mapRecognizeStatus(face.status)}`}
@@ -278,8 +320,8 @@ function FaceOverlay({
       <span
         className={cn(
           'absolute -top-6 left-0 rounded px-1.5 py-0.5 text-xs font-bold',
-          colorClass.split(' ')[2],
-          colorClass.split(' ')[1].replace('/10', '/90'),
+          style.chipBg,
+          style.chipText,
         )}
       >
         {index + 1}
@@ -291,65 +333,117 @@ function FaceOverlay({
 function FaceResultCard({
   face,
   index,
-  colorClass,
+  style,
   isSelected,
   onClick,
+  threshold,
 }: {
   face: RecognizedFace
   index: number
-  colorClass: string
+  style: (typeof OVERLAY_STYLES)[number]
   isSelected: boolean
   onClick: () => void
+  threshold: number
 }) {
   const isKnown = face.status === 'known'
+  const topCandidate = face.candidates[0]
+
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
       className={cn(
-        'card w-full text-left transition-all duration-150',
+        'card card-hover w-full cursor-pointer text-left transition-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
         isSelected && 'ring-2 ring-primary ring-offset-2',
       )}
     >
       <CardContent className="p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <div className={cn('flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold', colorClass)}>
+        <div className="mb-4 flex items-center justify-between">
+          <div
+            className={cn(
+              'flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold',
+              style.bg,
+              style.border,
+              style.text,
+            )}
+          >
             <span>Yüz {index + 1}</span>
           </div>
-          {isKnown ? (
-            <UserCheck className="h-5 w-5 text-emerald-600" aria-hidden="true" />
-          ) : (
-            <UserX className="h-5 w-5 text-slate-400" aria-hidden="true" />
-          )}
+          <StatusBadge status={face.status} />
         </div>
-        <p className="text-sm text-slate-500">Durum</p>
-        <p className="font-semibold text-navy-900">{mapRecognizeStatus(face.status)}</p>
-        {isKnown && face.name && (
-          <>
-            <p className="mt-2 text-sm text-slate-500">Kişi</p>
-            <p className="font-semibold text-navy-900">{face.name}</p>
-          </>
+
+        {isKnown && topCandidate ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              {topCandidate.photoId ? (
+                <img
+                  src={`/api/v1/photos/${topCandidate.photoId}`}
+                  alt={topCandidate.name || ''}
+                  className="h-14 w-14 rounded-lg object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-navy-50 text-navy-400">
+                  <User className="h-6 w-6" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-semibold text-navy-900">{topCandidate.name || 'Kayıtlı kişi'}</p>
+                <SimilarityScore score={topCandidate.score} threshold={threshold} size="sm" />
+              </div>
+            </div>
+            <Link
+              to={`/faces/${topCandidate.faceId}`}
+              className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              Kişi detayını gör
+              <ArrowLeft className="h-3.5 w-3.5 rotate-180" />
+            </Link>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 text-navy-500">
+            <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-navy-50">
+              <Search className="h-6 w-6" />
+            </div>
+            <div>
+              <p className="font-medium text-navy-900">Bilinmeyen kişi</p>
+              <p className="text-sm">Bu yüz kayıtlı kişilerle eşleşmedi.</p>
+            </div>
+          </div>
         )}
-        {isKnown && face.confidence !== null && (
-          <>
-            <p className="mt-2 text-sm text-slate-500">Benzerlik Skoru</p>
-            <p className="text-lg font-bold text-emerald-600">{(face.confidence * 100).toFixed(1)}%</p>
-          </>
-        )}
-        {face.candidates.length > 0 && (
-          <div className="mt-4 border-t border-slate-100 pt-3">
-            <p className="mb-2 text-xs font-semibold uppercase text-slate-400">Adaylar</p>
-            <ul className="space-y-1.5">
+
+        {face.candidates.length > 0 && topCandidate && (
+          <div className="mt-4 border-t border-navy-100 pt-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-navy-400">İlk adaylar</p>
+            <ul className="space-y-2">
               {face.candidates.slice(0, 3).map((candidate) => (
                 <li key={candidate.faceId} className="flex items-center justify-between text-sm">
-                  <span className="truncate text-slate-600">{candidate.faceId.slice(0, 8)}…</span>
-                  <span className="font-medium text-primary">{(candidate.score * 100).toFixed(1)}%</span>
+                  <span className="truncate text-navy-700">{candidate.name || 'İsimsiz kayıt'}</span>
+                  <span className="tabular-nums text-navy-500">{formatSimilarity(candidate.score)}</span>
                 </li>
               ))}
             </ul>
           </div>
         )}
       </CardContent>
-    </button>
+    </div>
+  )
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const isKnown = status === 'known'
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+        isKnown ? 'bg-successSubtle text-success' : 'bg-navy-100 text-navy-600',
+      )}
+    >
+      {isKnown ? <UserCheck className="h-3 w-3" /> : <Search className="h-3 w-3" />}
+      {mapRecognizeStatus(status)}
+    </span>
   )
 }

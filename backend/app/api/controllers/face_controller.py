@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 
 from app.schemas.face import (
+    AddPhotoResponse,
     BulkEnrollRecord,
     BulkEnrollResponse,
     EnrollResponse,
@@ -83,6 +84,21 @@ class FaceController:
     async def get_face(self, face_id: uuid.UUID) -> FaceDetail:
         result = await self._service.get_face(face_id)
         return FaceDetail.model_validate(result)
+
+    async def add_person_photo(
+        self,
+        face_id: uuid.UUID,
+        image_bytes: bytes,
+    ) -> AddPhotoResponse:
+        result = await self._service.add_person_photo(face_id, image_bytes)
+        return AddPhotoResponse.model_validate(result)
+
+    async def delete_person_photo(
+        self,
+        face_id: uuid.UUID,
+        photo_id: uuid.UUID,
+    ) -> None:
+        await self._service.delete_person_photo(face_id, photo_id)
 
     async def delete_face(self, face_id: uuid.UUID) -> None:
         await self._service.delete_face(face_id)

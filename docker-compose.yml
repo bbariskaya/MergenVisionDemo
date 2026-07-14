@@ -48,7 +48,6 @@ services:
       dockerfile: Dockerfile
     env_file: [.env]
     volumes:
-      - ./backend:/app
       - ./artifacts:/app/artifacts
       - ./artifacts/models:/models:ro
       - ./artifacts/engines:/engines:ro
@@ -73,19 +72,115 @@ services:
       start_period: 120s
     ports: ["8000:8000"]
 
-  ui-build:
+  gpu-worker-0:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["uvicorn", "app.workers.gpu_worker:app", "--host", "0.0.0.0", "--port", "8001"]
+    env_file: [.env]
+    environment:
+      WORKER_ID: gpu-worker-0
+      HOST_GPU_DEVICE_ID: ${GPU_WORKER_0_DEVICE_ID:-0}
+      API_PORT: 8001
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./artifacts/models:/models:ro
+      - ./artifacts/engines:/engines:ro
+      - ./lfw:/app/lfw:ro
+      - worker0_tmp:/tmp
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_WORKER_0_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  gpu-worker-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["uvicorn", "app.workers.gpu_worker:app", "--host", "0.0.0.0", "--port", "8001"]
+    env_file: [.env]
+    environment:
+      WORKER_ID: gpu-worker-1
+      HOST_GPU_DEVICE_ID: ${GPU_WORKER_1_DEVICE_ID:-1}
+      API_PORT: 8001
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./artifacts/models:/models:ro
+      - ./artifacts/engines:/engines:ro
+      - ./lfw:/app/lfw:ro
+      - worker1_tmp:/tmp
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_WORKER_1_DEVICE_ID:-1}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  gpu-worker-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["uvicorn", "app.workers.gpu_worker:app", "--host", "0.0.0.0", "--port", "8001"]
+    env_file: [.env]
+    environment:
+      WORKER_ID: gpu-worker-2
+      HOST_GPU_DEVICE_ID: ${GPU_WORKER_2_DEVICE_ID:-2}
+      API_PORT: 8001
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./artifacts/models:/models:ro
+      - ./artifacts/engines:/engines:ro
+      - ./lfw:/app/lfw:ro
+      - worker2_tmp:/tmp
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_WORKER_2_DEVICE_ID:-2}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  ui:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      target: builder
-    volumes:
-      - ui_dist:/app/dist
-
-  ui:
-    image: nginx:1.27-alpine
-    volumes:
-      - ui_dist:/usr/share/nginx/html:ro
-      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       api: {condition: service_healthy}
     ports: ["8080:80"]
@@ -95,4 +190,6 @@ volumes:
   minio_data:
   qdrant_data:
   api_tmp:
-  ui_dist:
+  worker0_tmp:
+  worker1_tmp:
+  worker2_tmp:

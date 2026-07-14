@@ -26,11 +26,14 @@ class FaceCandidate(_ApiModel):
     person_id: uuid.UUID = Field(alias="personId")
     photo_id: uuid.UUID = Field(alias="photoId")
     score: float
+    name: str | None = None
 
 
 class RecognizedFace(_ApiModel):
     face_index: int = Field(alias="faceIndex")
     face_id: uuid.UUID | None = Field(alias="faceId", default=None)
+    person_id: uuid.UUID | None = Field(alias="personId", default=None)
+    photo_id: uuid.UUID | None = Field(alias="photoId", default=None)
     status: str
     name: str | None = None
     metadata: dict[str, Any] | None = None
@@ -64,15 +67,25 @@ class FacePhotoItem(_ApiModel):
 class FaceDetail(_ApiModel):
     face_id: uuid.UUID = Field(alias="faceId")
     person_id: uuid.UUID = Field(alias="personId")
-    photo_id: uuid.UUID = Field(alias="photoId")
+    photo_id: uuid.UUID | None = Field(alias="photoId", default=None)
     name: str
     national_id_masked: str = Field(alias="nationalIdMasked")
     status: str
-    bounding_box: BoundingBox = Field(alias="boundingBox")
-    landmarks: list[list[float]]
+    bounding_box: BoundingBox | None = Field(alias="boundingBox", default=None)
+    landmarks: list[list[float]] | None = Field(default=None)
     metadata: dict[str, Any] | None = None
     created_at: datetime = Field(alias="createdAt")
     photos: list[FacePhotoItem]
+
+
+class AddPhotoResponse(_ApiModel):
+    face_id: uuid.UUID = Field(alias="faceId")
+    person_id: uuid.UUID = Field(alias="personId")
+    photo_id: uuid.UUID = Field(alias="photoId")
+    sample_id: uuid.UUID = Field(alias="sampleId")
+    status: str
+    name: str
+    created_at: datetime = Field(alias="createdAt")
 
 
 class FaceHistoryEntry(_ApiModel):
@@ -121,11 +134,12 @@ class BulkEnrollResponse(_ApiModel):
 class FaceListItem(_ApiModel):
     face_id: uuid.UUID = Field(alias="faceId")
     person_id: uuid.UUID = Field(alias="personId")
-    photo_id: uuid.UUID = Field(alias="photoId")
+    photo_id: uuid.UUID | None = Field(alias="photoId", default=None)
     name: str
     national_id_masked: str = Field(alias="nationalIdMasked")
     status: str
     created_at: datetime = Field(alias="createdAt")
+    photo_count: int = Field(alias="photoCount", default=1)
 
 
 class FaceListResponse(_ApiModel):

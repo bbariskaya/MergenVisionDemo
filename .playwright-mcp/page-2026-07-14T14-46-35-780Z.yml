@@ -1,0 +1,216 @@
+- generic [ref=f5e4]:
+  - banner [ref=f5e5]:
+    - generic [ref=f5e6]:
+      - button "Menüyü aç" [ref=f5e7] [cursor=pointer]
+      - navigation "Breadcrumb" [ref=f5e9]:
+        - list [ref=f5e10]:
+          - listitem [ref=f5e11]: Yüz Tanı
+    - button "Sistem Hazır" [ref=f5e53] [cursor=pointer]
+  - main [ref=f5e19]:
+    - generic [ref=f5e20]:
+      - generic [ref=f5e21]:
+        - generic [ref=f5e22]:
+          - heading "Yüz Tanı" [level=1] [ref=f5e23]
+          - paragraph [ref=f5e24]: Bir görsel yükleyerek kayıtlı kişilerle eşleştirin.
+        - generic [ref=f5e25]:
+          - generic [ref=f5e26]:
+            - generic [ref=f5e28]:
+              - generic [ref=f5e29]:
+                - paragraph [ref=f5e30]: Görsel Yükle
+                - generic [ref=f5e57]:
+                  - img "Yüklenecek görsel önizlemesi" [ref=f5e58]
+                  - button "Görseli kaldır" [ref=f5e60] [cursor=pointer]
+                  - paragraph [ref=f5e36]: t1.jpg (125.8 KB)
+              - generic [ref=f5e38]:
+                - generic [ref=f5e39]:
+                  - generic [ref=f5e40]: Sonuç Sayısı (Top-K)
+                  - spinbutton "Sonuç Sayısı (Top-K)" [ref=f5e41]: "5"
+                - generic [ref=f5e42]:
+                  - generic [ref=f5e43]: Eşik Değer
+                  - spinbutton "Eşik Değer" [ref=f5e44]: "0.6"
+              - button [ref=f5e65] [cursor=pointer]
+              - button "Yeni Görsel" [ref=f5e70] [cursor=pointer]
+            - generic [ref=f5e73]:
+              - heading "Sonuç Özeti" [level=3] [ref=f5e74]
+              - generic [ref=f5e75]:
+                - generic [ref=f5e76]: Toplam Yüz
+                - generic [ref=f5e77]: "6"
+              - generic [ref=f5e78]:
+                - generic [ref=f5e79]: Bulundu
+                - generic [ref=f5e80]: "2"
+              - generic [ref=f5e81]:
+                - generic [ref=f5e82]: Bulunamadı
+                - generic [ref=f5e83]: "4"
+              - link [ref=f5e84] [cursor=pointer]:
+                - /url: /processes/019f6117-631c-7d13-9779-ba1265990e7b
+                - button "İşlem Detayını Gör" [ref=f5e85]
+          - generic [ref=f5e48]:
+            - img "Sorgu görseli" [ref=f5e87]
+            - 'button "Yüz 1: Bulunamadı" [ref=f5e88] [cursor=pointer]':
+              - generic [ref=f5e89]: "1"
+            - 'button "Yüz 2: Bulunamadı" [ref=f5e90] [cursor=pointer]':
+              - generic [ref=f5e91]: "2"
+            - 'button "Yüz 3: Bulunamadı" [ref=f5e92] [cursor=pointer]':
+              - generic [ref=f5e93]: "3"
+            - 'button "Yüz 4: Bulunamadı" [ref=f5e94] [cursor=pointer]':
+              - generic [ref=f5e95]: "4"
+            - 'button "Yüz 5: Bulundu" [ref=f5e96] [cursor=pointer]':
+              - generic [ref=f5e97]: "5"
+            - 'button "Yüz 6: Bulundu" [ref=f5e98] [cursor=pointer]':
+              - generic [ref=f5e99]: "6"
+        - generic [ref=f5e100]:
+          - button "Yüz 1 Durum Bulunamadı Adaylar Roberto Tovar Roberto Tovar 31.9% Joe Gatti Joe Gatti 25.8% Adrien Brody Adrien Brody 24.3%" [ref=f5e101] [cursor=pointer]:
+            - generic [ref=f5e102]:
+              - generic [ref=f5e103]: Yüz 1
+              - paragraph [ref=f5e111]: Durum
+              - paragraph [ref=f5e112]: Bulunamadı
+              - generic [ref=f5e113]:
+                - paragraph [ref=f5e114]: Adaylar
+                - list [ref=f5e115]:
+                  - listitem [ref=f5e116]:
+                    - img "Roberto Tovar" [ref=f5e117]
+                    - generic [ref=f5e118]:
+                      - paragraph [ref=f5e119]: Roberto Tovar
+                      - paragraph [ref=f5e120]: 31.9%
+                  - listitem [ref=f5e121]:
+                    - img "Joe Gatti" [ref=f5e122]
+                    - generic [ref=f5e123]:
+                      - paragraph [ref=f5e124]: Joe Gatti
+                      - paragraph [ref=f5e125]: 25.8%
+                  - listitem [ref=f5e126]:
+                    - img "Adrien Brody" [ref=f5e127]
+                    - generic [ref=f5e128]:
+                      - paragraph [ref=f5e129]: Adrien Brody
+                      - paragraph [ref=f5e130]: 24.3%
+          - button "Yüz 2 Durum Bulunamadı Adaylar Matthew Perry Matthew Perry 52.0% Matthew Perry Matthew Perry 49.7% Matthew Perry Matthew Perry 47.0%" [ref=f5e131] [cursor=pointer]:
+            - generic [ref=f5e132]:
+              - generic [ref=f5e133]: Yüz 2
+              - paragraph [ref=f5e141]: Durum
+              - paragraph [ref=f5e142]: Bulunamadı
+              - generic [ref=f5e143]:
+                - paragraph [ref=f5e144]: Adaylar
+                - list [ref=f5e145]:
+                  - listitem [ref=f5e146]:
+                    - img "Matthew Perry" [ref=f5e147]
+                    - generic [ref=f5e148]:
+                      - paragraph [ref=f5e149]: Matthew Perry
+                      - paragraph [ref=f5e150]: 52.0%
+                  - listitem [ref=f5e151]:
+                    - img "Matthew Perry" [ref=f5e152]
+                    - generic [ref=f5e153]:
+                      - paragraph [ref=f5e154]: Matthew Perry
+                      - paragraph [ref=f5e155]: 49.7%
+                  - listitem [ref=f5e156]:
+                    - img "Matthew Perry" [ref=f5e157]
+                    - generic [ref=f5e158]:
+                      - paragraph [ref=f5e159]: Matthew Perry
+                      - paragraph [ref=f5e160]: 47.0%
+          - button "Yüz 3 Durum Bulunamadı Adaylar Courtney Cox Courtney Cox 35.8% Angie Arzola Angie Arzola 30.3% Martie Maguire Martie Maguire 27.8%" [ref=f5e161] [cursor=pointer]:
+            - generic [ref=f5e162]:
+              - generic [ref=f5e163]: Yüz 3
+              - paragraph [ref=f5e171]: Durum
+              - paragraph [ref=f5e172]: Bulunamadı
+              - generic [ref=f5e173]:
+                - paragraph [ref=f5e174]: Adaylar
+                - list [ref=f5e175]:
+                  - listitem [ref=f5e176]:
+                    - img "Courtney Cox" [ref=f5e177]
+                    - generic [ref=f5e178]:
+                      - paragraph [ref=f5e179]: Courtney Cox
+                      - paragraph [ref=f5e180]: 35.8%
+                  - listitem [ref=f5e181]:
+                    - img "Angie Arzola" [ref=f5e182]
+                    - generic [ref=f5e183]:
+                      - paragraph [ref=f5e184]: Angie Arzola
+                      - paragraph [ref=f5e185]: 30.3%
+                  - listitem [ref=f5e186]:
+                    - img "Martie Maguire" [ref=f5e187]
+                    - generic [ref=f5e188]:
+                      - paragraph [ref=f5e189]: Martie Maguire
+                      - paragraph [ref=f5e190]: 27.8%
+          - button "Yüz 4 Durum Bulunamadı Adaylar Natasha Henstridge Natasha Henstridge 32.0% Kristin Davis Kristin Davis 27.2% Kristin Davis Kristin Davis 26.6%" [ref=f5e191] [cursor=pointer]:
+            - generic [ref=f5e192]:
+              - generic [ref=f5e193]: Yüz 4
+              - paragraph [ref=f5e201]: Durum
+              - paragraph [ref=f5e202]: Bulunamadı
+              - generic [ref=f5e203]:
+                - paragraph [ref=f5e204]: Adaylar
+                - list [ref=f5e205]:
+                  - listitem [ref=f5e206]:
+                    - img "Natasha Henstridge" [ref=f5e207]
+                    - generic [ref=f5e208]:
+                      - paragraph [ref=f5e209]: Natasha Henstridge
+                      - paragraph [ref=f5e210]: 32.0%
+                  - listitem [ref=f5e211]:
+                    - img "Kristin Davis" [ref=f5e212]
+                    - generic [ref=f5e213]:
+                      - paragraph [ref=f5e214]: Kristin Davis
+                      - paragraph [ref=f5e215]: 27.2%
+                  - listitem [ref=f5e216]:
+                    - img "Kristin Davis" [ref=f5e217]
+                    - generic [ref=f5e218]:
+                      - paragraph [ref=f5e219]: Kristin Davis
+                      - paragraph [ref=f5e220]: 26.6%
+          - button "Yüz 5 Durum Bulundu Jennifer Aniston Jennifer Aniston Benzerlik Skoru 61.3% Benzerlik Skoru 61.3% Adaylar Jennifer Aniston Jennifer Aniston 61.3% Jennifer Aniston Jennifer Aniston 59.8% Jennifer Aniston Jennifer Aniston 59.6%" [ref=f5e221] [cursor=pointer]:
+            - generic [ref=f5e222]:
+              - generic [ref=f5e223]: Yüz 5
+              - paragraph [ref=f5e230]: Durum
+              - paragraph [ref=f5e231]: Bulundu
+              - link [ref=f5e232]:
+                - /url: /faces/a8b3f04e-8401-5159-8541-22c31b0d15a8
+                - img "Jennifer Aniston" [ref=f5e233]
+                - paragraph [ref=f5e234]: Jennifer Aniston
+              - paragraph [ref=f5e235]: Benzerlik Skoru
+              - paragraph [ref=f5e236]: 61.3%
+              - paragraph [ref=f5e237]: Benzerlik Skoru
+              - paragraph [ref=f5e238]: 61.3%
+              - generic [ref=f5e239]:
+                - paragraph [ref=f5e240]: Adaylar
+                - list [ref=f5e241]:
+                  - listitem [ref=f5e242]:
+                    - img "Jennifer Aniston" [ref=f5e243]
+                    - generic [ref=f5e244]:
+                      - paragraph [ref=f5e245]: Jennifer Aniston
+                      - paragraph [ref=f5e246]: 61.3%
+                  - listitem [ref=f5e247]:
+                    - img "Jennifer Aniston" [ref=f5e248]
+                    - generic [ref=f5e249]:
+                      - paragraph [ref=f5e250]: Jennifer Aniston
+                      - paragraph [ref=f5e251]: 59.8%
+                  - listitem [ref=f5e252]:
+                    - img "Jennifer Aniston" [ref=f5e253]
+                    - generic [ref=f5e254]:
+                      - paragraph [ref=f5e255]: Jennifer Aniston
+                      - paragraph [ref=f5e256]: 59.6%
+          - button "Yüz 6 Durum Bulundu Matt LeBlanc Matt LeBlanc Benzerlik Skoru 60.2% Benzerlik Skoru 60.2% Adaylar Matt LeBlanc Matt LeBlanc 60.2% Andy Garcia Andy Garcia 30.2% Douglas Gansler Douglas Gansler 28.0%" [ref=f5e257] [cursor=pointer]:
+            - generic [ref=f5e258]:
+              - generic [ref=f5e259]: Yüz 6
+              - paragraph [ref=f5e266]: Durum
+              - paragraph [ref=f5e267]: Bulundu
+              - link [ref=f5e268]:
+                - /url: /faces/649b24ee-25ea-50c4-82e7-af27c04f1651
+                - img "Matt LeBlanc" [ref=f5e269]
+                - paragraph [ref=f5e270]: Matt LeBlanc
+              - paragraph [ref=f5e271]: Benzerlik Skoru
+              - paragraph [ref=f5e272]: 60.2%
+              - paragraph [ref=f5e273]: Benzerlik Skoru
+              - paragraph [ref=f5e274]: 60.2%
+              - generic [ref=f5e275]:
+                - paragraph [ref=f5e276]: Adaylar
+                - list [ref=f5e277]:
+                  - listitem [ref=f5e278]:
+                    - img "Matt LeBlanc" [ref=f5e279]
+                    - generic [ref=f5e280]:
+                      - paragraph [ref=f5e281]: Matt LeBlanc
+                      - paragraph [ref=f5e282]: 60.2%
+                  - listitem [ref=f5e283]:
+                    - img "Andy Garcia" [ref=f5e284]
+                    - generic [ref=f5e285]:
+                      - paragraph [ref=f5e286]: Andy Garcia
+                      - paragraph [ref=f5e287]: 30.2%
+                  - listitem [ref=f5e288]:
+                    - img "Douglas Gansler" [ref=f5e289]
+                    - generic [ref=f5e290]:
+                      - paragraph [ref=f5e291]: Douglas Gansler
+                      - paragraph [ref=f5e292]: 28.0%
+      - region "Bildirimler"

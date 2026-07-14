@@ -21,3 +21,4 @@ minio_data/
 qdrant_data/
 api_tmp/
 lfw/
+vgg-face/

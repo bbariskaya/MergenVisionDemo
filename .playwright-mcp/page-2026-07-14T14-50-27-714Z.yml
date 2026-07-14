@@ -1,0 +1,12 @@
+- generic [ref=f8e4]:
+  - banner [ref=f8e5]:
+    - generic [ref=f8e6]:
+      - button "Menüyü aç" [ref=f8e7] [cursor=pointer]
+      - navigation "Breadcrumb" [ref=f8e9]:
+        - list [ref=f8e10]:
+          - listitem [ref=f8e11]: Yüz Detayı
+          - listitem [ref=f8e12]: /9d56585e-b8af-5149-85f6-53990ded2ce6
+    - button "Kontrol ediliyor" [ref=f8e14] [cursor=pointer]
+  - main [ref=f8e20]:
+    - generic [ref=f8e21]:
+      - region "Bildirimler"

@@ -118,8 +118,13 @@ extern "C" int mergenvision_warp_align(
     int w,
     const float* d_matrices,
     int n,
-    float* d_dst,
+    const float* d_dst,
     cudaStream_t stream);
+
+extern "C" int mergenvision_spin_wait_cycles(
+    unsigned long long cycles,
+    cudaStream_t stream);
+
 
 static cudaStream_t int_to_stream(uintptr_t s) {
     return reinterpret_cast<cudaStream_t>(s);
@@ -318,4 +323,9 @@ PYBIND11_MODULE(_mergenvision_gpu, m) {
     }, py::arg("src_ptr"), py::arg("h"), py::arg("w"),
        py::arg("matrices_ptr"), py::arg("n"),
        py::arg("dst_ptr"), py::arg("stream_ptr") = 0);
+
+    m.def("spin_wait_cycles", [](unsigned long long cycles, uintptr_t stream_ptr) {
+        check(mergenvision_spin_wait_cycles(
+            cycles, int_to_stream(stream_ptr)), "spin_wait_cycles");
+    }, py::arg("cycles"), py::arg("stream_ptr") = 0);
 }

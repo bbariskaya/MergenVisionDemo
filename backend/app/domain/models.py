@@ -7,7 +7,7 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, SmallInteg
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.core.ids import new_uuid7
+from app.core.ids import derive_face_identity_id, derive_person_id, identity_hmac, new_uuid7
 
 
 def utc_now() -> datetime:
@@ -21,11 +21,40 @@ class Base(DeclarativeBase):
     }
 
 
+class FaceIdentity(Base):
+    __tablename__ = "face_identity"
+
+    face_identity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid7
+    )
+    identity_lookup_hmac: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True
+    )
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_identity_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    persons: Mapped[list["Person"]] = relationship(
+        back_populates="face_identity", lazy="selectin"
+    )
+
+
 class Person(Base):
     __tablename__ = "person"
 
     person_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=new_uuid7
+    )
+    face_identity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("face_identity.face_identity_id"), nullable=False
     )
     first_name: Mapped[str] = mapped_column(String(255), nullable=False)
     last_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -47,6 +76,9 @@ class Person(Base):
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
 
+    face_identity: Mapped["FaceIdentity"] = relationship(
+        back_populates="persons", lazy="selectin"
+    )
     photos: Mapped[list["PersonPhoto"]] = relationship(
         back_populates="person", lazy="selectin"
     )
@@ -202,4 +234,102 @@ class RecognitionResult(Base):
         sa.UniqueConstraint("request_id", "face_index"),
         sa.Index("ix_recognition_result_request_face", "request_id", "face_index"),
         sa.CheckConstraint("recognition_status IN ('known','unknown')"),
+    )
+
+
+class InferenceProfile(Base):
+    __tablename__ = "inference_profile"
+
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid7
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    detector_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        sa.Index("ix_inference_profile_active", "active"),
+    )
+
+
+class ProcessRecord(Base):
+    __tablename__ = "process_record"
+
+    process_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid7
+    )
+    process_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending"
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    events: Mapped[list["ProcessEvent"]] = relationship(
+        back_populates="process", lazy="selectin"
+    )
+
+    __table_args__ = (
+        sa.Index("ix_process_record_status_started", "status", sa.desc("started_at")),
+        sa.Index("ix_process_record_type_started", "process_type", sa.desc("started_at")),
+        sa.CheckConstraint("status IN ('pending','running','completed','failed')"),
+    )
+
+
+class ProcessEvent(Base):
+    __tablename__ = "process_event"
+
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid7
+    )
+    process_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("process_record.process_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status_before: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    status_after: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    process: Mapped["ProcessRecord"] = relationship(
+        back_populates="events", lazy="selectin"
+    )
+
+    __table_args__ = (
+        sa.Index("ix_process_event_process_sequence", "process_id", "sequence"),
+        sa.CheckConstraint(
+            "status_before IS NULL OR status_before IN ('pending','running','completed','failed')"
+        ),
+        sa.CheckConstraint(
+            "status_after IS NULL OR status_after IN ('pending','running','completed','failed')"
+        ),
     )

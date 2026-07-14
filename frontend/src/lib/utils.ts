@@ -74,3 +74,19 @@ export function statusColor(status: string): string {
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
+
+export function formatSimilarity(score: number | null | undefined): string {
+  if (score === null || score === undefined || !Number.isFinite(score)) return '—'
+  return Math.max(0, Math.min(1, score)).toFixed(2)
+}
+
+export function similarityPercent(score: number | null | undefined): string {
+  if (score === null || score === undefined || !Number.isFinite(score)) return '—'
+  return `${(Math.max(0, Math.min(1, score)) * 100).toFixed(1)}%`
+}
+
+export function matchMargin(score: number, threshold: number): string {
+  const margin = score - threshold
+  const sign = margin > 0 ? '+' : ''
+  return `${sign}${margin.toFixed(2)}`
+}

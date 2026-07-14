@@ -45,6 +45,8 @@ class DeviceTensor:
         device_id: int,
         owner: Any,
         stream: int | None = None,
+        *,
+        lease: Any = None,
     ) -> None:
         if ptr == 0:
             raise ValueError("DeviceTensor requires a non-null device pointer")
@@ -53,14 +55,20 @@ class DeviceTensor:
         self._dtype = dtype
         self._device_id = int(device_id)
         self._owner = owner
+        self._lease = lease
         self._stream = stream
         itemsize = self._DTYPE_TO_ITEMSIZE.get(dtype)
         if itemsize is None:
             raise TypeError(f"Unsupported DeviceTensor dtype: {dtype}")
         self._itemsize = itemsize
-        self._nbytes = self._itemsize * int(
-            __import__("functools").reduce(int.__mul__, self._shape, 1)
-        )
+        # Lease-backed tensors report the allocation size, which may exceed the
+        # requested view shape (e.g., scratch buffers reused with smaller shapes).
+        if self._lease is not None:
+            self._nbytes = self._lease.ptr_nbytes
+        else:
+            self._nbytes = self._itemsize * int(
+                __import__("functools").reduce(int.__mul__, self._shape, 1)
+            )
 
     @property
     def ptr(self) -> int:
@@ -135,6 +143,7 @@ class DeviceTensor:
             self._device_id,
             self._owner,
             stream=stream,
+            lease=self._lease,
         )
 
 

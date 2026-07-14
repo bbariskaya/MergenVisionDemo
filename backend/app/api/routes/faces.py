@@ -27,6 +27,7 @@ from app.infrastructure.minio import PhotoStorage
 from app.infrastructure.qdrant import FaceVectorStore
 from app.ml.gpu.face_pipeline import GpuFacePipeline
 from app.schemas.face import (
+    AddPhotoResponse,
     BulkEnrollItemRequest,
     BulkEnrollResponse,
     EnrollResponse,
@@ -206,6 +207,46 @@ async def get_face(
     service = _build_service(db, storage, vector_store, pipeline, pipeline_lock)
     controller = FaceController(service)
     return await controller.get_face(face_id)
+
+
+@router.post(
+    "/{face_id}/photos",
+    response_model=AddPhotoResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a photo to an enrolled person",
+)
+async def add_person_photo(
+    face_id: uuid.UUID,
+    image: Annotated[UploadFile, File()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    storage: Annotated[PhotoStorage, Depends(get_storage)],
+    vector_store: Annotated[FaceVectorStore, Depends(get_vector_store)],
+    pipeline: Annotated[GpuFacePipeline, Depends(get_face_pipeline)],
+    pipeline_lock=Depends(get_face_pipeline_lock),
+) -> AddPhotoResponse:
+    image_bytes = await image.read()
+    service = _build_service(db, storage, vector_store, pipeline, pipeline_lock)
+    controller = FaceController(service)
+    return await controller.add_person_photo(face_id, image_bytes)
+
+
+@router.delete(
+    "/{face_id}/photos/{photo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a photo from an enrolled person",
+)
+async def delete_person_photo(
+    face_id: uuid.UUID,
+    photo_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    storage: Annotated[PhotoStorage, Depends(get_storage)],
+    vector_store: Annotated[FaceVectorStore, Depends(get_vector_store)],
+    pipeline: Annotated[GpuFacePipeline, Depends(get_face_pipeline)],
+    pipeline_lock=Depends(get_face_pipeline_lock),
+) -> None:
+    service = _build_service(db, storage, vector_store, pipeline, pipeline_lock)
+    controller = FaceController(service)
+    await controller.delete_person_photo(face_id, photo_id)
 
 
 @router.delete(

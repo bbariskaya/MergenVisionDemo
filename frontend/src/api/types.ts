@@ -12,11 +12,14 @@ export interface FaceCandidate {
   personId: UUID
   photoId: UUID
   score: number
+  name: string | null
 }
 
 export interface RecognizedFace {
   faceIndex: number
   faceId: UUID | null
+  personId: UUID | null
+  photoId: UUID | null
   status: 'known' | 'unknown' | string
   name: string | null
   metadata: Record<string, unknown> | null
@@ -57,15 +60,25 @@ export interface FacePhoto {
 export interface FaceDetail {
   faceId: UUID
   personId: UUID
-  photoId: UUID
+  photoId: UUID | null
   name: string
   nationalIdMasked: string
   status: string
-  boundingBox: BoundingBox
-  landmarks: number[][]
+  boundingBox: BoundingBox | null
+  landmarks: number[][] | null
   metadata: Record<string, unknown> | null
   createdAt: string
   photos: FacePhoto[]
+}
+
+export interface AddPhotoResponse {
+  faceId: UUID
+  personId: UUID
+  photoId: UUID
+  sampleId: UUID
+  status: string
+  name: string
+  createdAt: string
 }
 
 export interface FaceHistoryEntry {
@@ -108,11 +121,12 @@ export interface BulkEnrollResponse {
 export interface FaceListItem {
   faceId: UUID
   personId: UUID
-  photoId: UUID
+  photoId: UUID | null
   name: string
   nationalIdMasked: string
   status: string
   createdAt: string
+  photoCount: number
 }
 
 export interface FaceListResponse {
@@ -122,21 +136,12 @@ export interface FaceListResponse {
   offset: number
 }
 
-export interface FaceListItem {
-  faceId: UUID
-  personId: UUID
-  photoId: UUID
-  name: string
-  nationalIdMasked: string
-  status: string
-  createdAt: string
-}
-
-export interface FaceListResponse {
-  items: FaceListItem[]
-  total: number
-  limit: number
-  offset: number
+export interface EnrollmentStats {
+  personCount: number
+  faceCount: number
+  photoCount: number
+  recognitionCount: number
+  activePersonCount: number
 }
 
 export interface HealthComponent {

@@ -10,6 +10,7 @@ import IdentifyPage from '@/pages/IdentifyPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 import ProcessDetailPage from '@/pages/ProcessDetailPage'
 import SettingsPage from '@/pages/SettingsPage'
+import SystemStatusPage from '@/pages/SystemStatusPage'
 import { Route, Routes } from 'react-router'
 
 function AppContent() {
@@ -23,6 +24,7 @@ function AppContent() {
         <Route path="/identify" element={<IdentifyPage onToast={addToast} />} />
         <Route path="/search-face" element={<FaceSearchPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/system" element={<SystemStatusPage />} />
         <Route path="/faces/:faceId" element={<FaceDetailPage onToast={addToast} />} />
         <Route path="/processes/:processId" element={<ProcessDetailPage />} />
         <Route path="*" element={<NotFoundPage />} />

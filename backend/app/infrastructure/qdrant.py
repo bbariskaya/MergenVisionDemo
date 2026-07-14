@@ -179,17 +179,19 @@ class FaceVectorStore:
                 f"Incompatible Qdrant schema for {self._collection}"
             )
 
-    async def upsert_batch(self, points: list[models.PointStruct]) -> None:
+    async def upsert_batch(
+        self, points: list[models.PointStruct], *, wait: bool = False
+    ) -> None:
         for point in points:
             self._validate_payload(point)
             self._validate_vector(point.vector)
-        # Smaller Qdrant batches; do not block on index flush during bulk load.
+        # Smaller Qdrant batches to keep request sizes bounded.
         batch_size = 256
         for i in range(0, len(points), batch_size):
             await self._client.upsert(
                 collection_name=self._collection,
                 points=points[i : i + batch_size],
-                wait=False,
+                wait=wait,
             )
 
     async def search_active(

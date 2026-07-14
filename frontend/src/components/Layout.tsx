@@ -5,36 +5,46 @@ import { useLocation } from 'react-router'
 import { HealthIndicator } from './HealthIndicator'
 import { Sidebar } from './Sidebar'
 
-function Breadcrumb() {
-  const location = useLocation()
-  const segments = location.pathname.split('/').filter(Boolean)
+const pageTitles: Record<string, { title: string; subtitle?: string }> = {
+  '/': { title: 'Genel Bakış', subtitle: 'Operasyonel özet' },
+  '/enroll': { title: 'Yeni Kişi Kaydı', subtitle: 'Kişi bilgilerini ve yüz görselini ekleyin' },
+  '/identify': { title: 'Yüz Tanıma', subtitle: 'Bir görseldeki yüzleri kayıtlı kişilerle eşleştirin' },
+  '/search-face': { title: 'Kişiler', subtitle: 'Kayıtlı kimlikleri arayın ve görüntüleyin' },
+  '/system': { title: 'Sistem Durumu', subtitle: 'Altyapı ve servis sağlığı' },
+  '/settings': { title: 'Ayarlar' },
+}
 
-  const labels: Record<string, string> = {
-    '': 'Ana Sayfa',
-    enroll: 'Kayıt Yap',
-    identify: 'Yüz Tanı',
-    'search-face': 'Yüz Ara',
-    settings: 'Ayarlar',
-    faces: 'Yüz Detayı',
-    processes: 'İşlem Detayı',
-  }
+const firstSegmentLabels: Record<string, string> = {
+  enroll: 'Yeni Kişi Kaydı',
+  identify: 'Yüz Tanıma',
+  'search-face': 'Kişiler',
+  system: 'Sistem Durumu',
+  settings: 'Ayarlar',
+  faces: 'Kişi Detayı',
+  processes: 'İşlem Detayı',
+}
+
+function PageTitle() {
+  const { pathname } = useLocation()
+  const meta = pageTitles[pathname]
+  const segments = pathname.split('/').filter(Boolean)
+  const firstSegment = segments[0]
+  const title = meta?.title ?? (firstSegment ? firstSegmentLabels[firstSegment] ?? firstSegment : 'Ana Sayfa')
+  const subtitle = meta?.subtitle ?? (segments.length > 1 ? segments.slice(1).join(' / ') : undefined)
 
   return (
-    <nav aria-label="Breadcrumb" className="text-sm text-slate-500">
-      <ol className="flex items-center gap-2">
-        <li>
-          <span className="font-medium text-slate-800">
-            {segments.length === 0 ? 'Ana Sayfa' : labels[segments[0]] || segments[0]}
-          </span>
-        </li>
-        {segments.length > 1 && (
-          <li>
-            <span className="text-slate-400">/</span>
-            <span className="ml-2 text-slate-600">{segments.slice(1).join(' / ')}</span>
-          </li>
-        )}
-      </ol>
-    </nav>
+    <div className="min-w-0">
+      <span className="block truncate text-lg font-semibold text-navy-900">{title}</span>
+      {subtitle && <span className="block truncate text-xs text-navy-500">{subtitle}</span>}
+    </div>
+  )
+}
+
+function DemoBadge() {
+  return (
+    <span className="inline-flex items-center rounded-full border border-navy-200 bg-white px-2.5 py-1 text-xs font-medium text-navy-600">
+      Demo Ortamı
+    </span>
   )
 }
 
@@ -49,20 +59,23 @@ export function Layout({ children }: LayoutProps) {
     <div className="flex min-h-screen bg-background">
       <Sidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
       <div className="flex flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/80 px-4 backdrop-blur lg:px-8">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200 bg-white/90 px-4 backdrop-blur lg:px-6">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setMobileOpen(true)}
-              className="rounded p-2 text-slate-600 hover:bg-slate-100 lg:hidden"
+              className="rounded p-2 text-navy-600 hover:bg-navy-100 focus-visible:ring-primary lg:hidden"
               aria-label="Menüyü aç"
             >
               <Menu className="h-6 w-6" />
             </button>
-            <Breadcrumb />
+            <PageTitle />
           </div>
-          <HealthIndicator />
+          <div className="flex items-center gap-3">
+            <DemoBadge />
+            <HealthIndicator />
+          </div>
         </header>
-        <main className={cn('flex-1 p-4 lg:p-8')}>
+        <main className={cn('flex-1 p-4 lg:p-6')}>
           <div className="mx-auto max-w-7xl">{children}</div>
         </main>
       </div>

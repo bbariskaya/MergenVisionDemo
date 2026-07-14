@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiUpload } from './client'
 import { queryKeys } from './queryKeys'
 import type {
+  AddPhotoResponse,
   BulkEnrollResponse,
   EnrollRequest,
   EnrollResponse,
@@ -82,6 +83,7 @@ export function useFaceList(params: FaceListParams = {}) {
   return useQuery({
     queryKey: ['faces', 'list', params] as const,
     queryFn: () => listFaces(params),
+    refetchInterval: 5000,
   })
 }
 
@@ -90,6 +92,34 @@ export function useFace(faceId: string) {
     queryKey: queryKeys.face(faceId),
     queryFn: () => apiFetch<FaceDetail>(`/faces/${faceId}`),
     enabled: faceId.length > 0,
+  })
+}
+
+export function useAddPersonPhotoMutation(faceId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<AddPhotoResponse, Error, File>({
+    mutationFn: async (image) => {
+      const formData = new FormData()
+      formData.append('image', image)
+      return apiUpload<AddPhotoResponse>(`/faces/${faceId}/photos`, formData)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.face(faceId) })
+      queryClient.invalidateQueries({ queryKey: ['faces', 'list'] })
+    },
+  })
+}
+
+export function useDeletePersonPhotoMutation(faceId: string) {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (photoId) => {
+      return apiFetch(`/faces/${faceId}/photos/${photoId}`, { method: 'DELETE' })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.face(faceId) })
+      queryClient.invalidateQueries({ queryKey: ['faces', 'list'] })
+    },
   })
 }
 

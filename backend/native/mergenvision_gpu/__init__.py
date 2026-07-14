@@ -8,6 +8,7 @@ from mergenvision_gpu._mergenvision_gpu import (
     scale_clip_compact_xy,
     scrfd_decode_level,
     similarity_transform,
+    spin_wait_cycles,
     warp_align,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "scale_clip_compact_xy",
     "scrfd_decode_level",
     "similarity_transform",
+    "spin_wait_cycles",
     "warp_align",
 ]

@@ -1,0 +1,21 @@
+- generic [ref=f1e4]:
+  - banner [ref=f1e5]:
+    - generic [ref=f1e6]:
+      - button "Menüyü aç" [ref=f1e7] [cursor=pointer]
+      - navigation "Breadcrumb" [ref=f1e9]:
+        - list [ref=f1e10]:
+          - listitem [ref=f1e11]: Yüz Ara
+    - button "Kontrol ediliyor" [ref=f1e13] [cursor=pointer]
+  - main [ref=f1e19]:
+    - generic [ref=f1e20]:
+      - generic [ref=f1e21]:
+        - generic [ref=f1e22]:
+          - generic [ref=f1e23]:
+            - heading "Kayıtlı Kişiler" [level=1] [ref=f1e24]
+            - paragraph [ref=f1e25]: Kayıtlı kişileri arayın ve görüntüleyin.
+          - link [ref=f1e26] [cursor=pointer]:
+            - /url: /enroll
+            - button "Yeni Kayıt" [ref=f1e27]
+        - textbox "İsim ile ara" [ref=f1e36]:
+          - /placeholder: İsim ile ara…
+      - region "Bildirimler"
