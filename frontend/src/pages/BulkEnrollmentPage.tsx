@@ -1,8 +1,15 @@
-import { useCancelBulkJob, useLatestBulkJob, useStartVggfaceBulkJob } from '@/api/bulkJobs'
+import {
+  useBulkJob,
+  useCancelBulkJob,
+  useLatestBulkJob,
+  useStartCasiaBulkJob,
+  useStartLfwBulkJob,
+  useStartVggfaceBulkJob,
+} from '@/api/bulkJobs'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Activity, Loader2, Pause, Play, Users } from 'lucide-react'
 
 function formatDuration(seconds: number): string {
@@ -18,28 +25,52 @@ function formatDuration(seconds: number): string {
 }
 
 function formatEta(
-  enrolled: number,
+  processed: number,
   requested: number,
-  avgPerSecond: number,
+  perSecond: number,
 ): string {
-  if (!avgPerSecond || enrolled <= 0) return '—'
-  const remaining = Math.max(0, requested - enrolled)
-  return formatDuration(remaining / avgPerSecond)
+  if (!perSecond || processed <= 0) return '—'
+  const remaining = Math.max(0, requested - processed)
+  return formatDuration(remaining / perSecond)
 }
 
 export default function BulkEnrollmentPage() {
-  const { data: job, isLoading, error } = useLatestBulkJob()
-  const startJob = useStartVggfaceBulkJob()
-  const cancelJob = useCancelBulkJob()
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [jobId, setJobId] = useState<string>(job?.jobId ?? '')
+  const { data: latestJob, isLoading, error } = useLatestBulkJob()
+  const [candidateJobId, setCandidateJobId] = useState<string>(latestJob?.jobId ?? '')
 
   useEffect(() => {
-    if (job?.jobId) setJobId(job.jobId)
-  }, [job?.jobId])
+    if (latestJob?.jobId) setCandidateJobId(latestJob.jobId)
+  }, [latestJob?.jobId])
+
+  const { data: polledJob, error: pollError } = useBulkJob(candidateJobId)
+
+  // Prefer the live polled job while one exists; fall back to the latest lookup.
+  const job = useMemo(
+    () => (candidateJobId && polledJob ? polledJob : latestJob),
+    [candidateJobId, polledJob, latestJob],
+  )
+  const displayedError = error || pollError
+
+  const startJob = useStartVggfaceBulkJob()
+  const startLfwJob = useStartLfwBulkJob()
+  const startCasiaJob = useStartCasiaBulkJob()
+  const cancelJob = useCancelBulkJob()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  useEffect(() => {
+    if (startJob.data?.jobId) setCandidateJobId(startJob.data.jobId)
+  }, [startJob.data?.jobId])
+
+  useEffect(() => {
+    if (startLfwJob.data?.jobId) setCandidateJobId(startLfwJob.data.jobId)
+  }, [startLfwJob.data?.jobId])
+
+  useEffect(() => {
+    if (startCasiaJob.data?.jobId) setCandidateJobId(startCasiaJob.data.jobId)
+  }, [startCasiaJob.data?.jobId])
 
   const isRunning =
-    jobId &&
+    candidateJobId &&
     job &&
     ['queued', 'running', 'cancel_requested', 'cancelling'].includes(job.status)
 
@@ -57,23 +88,49 @@ export default function BulkEnrollmentPage() {
             İşlemi Durdur
           </Button>
         ) : (
-          <Button
-            onClick={() => startJob.mutate(undefined)}
-            disabled={startJob.isPending || isLoading}
-          >
-            {startJob.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="mr-2 h-4 w-4" />
-            )}
-            VGGFace İşlemini Başlat
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() => startJob.mutate(undefined)}
+              disabled={startJob.isPending || isLoading}
+            >
+              {startJob.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              VGGFace İşlemini Başlat
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => startLfwJob.mutate(undefined)}
+              disabled={startLfwJob.isPending || isLoading}
+            >
+              {startLfwJob.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              LFW İşlemini Başlat
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => startCasiaJob.mutate(undefined)}
+              disabled={startCasiaJob.isPending || isLoading}
+            >
+              {startCasiaJob.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              CASIA İşlemini Başlat
+            </Button>
+          </div>
         )}
       </div>
 
-      {error && (
+      {displayedError && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
-          Henüz bir toplu kayıt işlemi başlatılmamış.
+          Henüz bir toplu kayıt işlemi başlatılmamış veya durum alınamadı.
         </div>
       )}
 
@@ -127,11 +184,30 @@ export default function BulkEnrollmentPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-navy-900">
-                {job.totalEnrolled.toLocaleString('tr-TR')} /{' '}
+                {job.totalProcessed.toLocaleString('tr-TR')} /{' '}
                 {job.requestedPhotos.toLocaleString('tr-TR')}
               </div>
               <p className="mt-1 text-xs text-slate-500">
-                {job.totalDuplicate} yinelenen, {job.totalNoFace} yüz bulunamadı
+                {job.totalScanned.toLocaleString('tr-TR')} tarandı,{' '}
+                {job.totalEnrolled.toLocaleString('tr-TR')} kaydedildi
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-slate-500">
+                Durum Özeti
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-navy-900">
+                {job.totalDuplicate.toLocaleString('tr-TR')} /{' '}
+                {job.totalNoFace.toLocaleString('tr-TR')} /{' '}
+                {job.totalErrors.toLocaleString('tr-TR')}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Yinelenen / yüz yok / hata
               </p>
             </CardContent>
           </Card>
@@ -144,7 +220,7 @@ export default function BulkEnrollmentPage() {
             <CardTitle className="text-navy-900">Performans</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6">
               <div>
                 <p className="text-xs text-slate-500">Geçen Süre</p>
                 <p className="text-lg font-semibold text-navy-900">
@@ -154,13 +230,25 @@ export default function BulkEnrollmentPage() {
               <div>
                 <p className="text-xs text-slate-500">Tahmini Kalan</p>
                 <p className="text-lg font-semibold text-navy-900">
-                  {formatEta(job.totalEnrolled, job.requestedPhotos, job.avgPhotosPerSecond)}
+                  {formatEta(job.totalProcessed, job.requestedPhotos, job.processedPhotosPerSecond)}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Ort. Fotoğraf/sn</p>
                 <p className="text-lg font-semibold text-navy-900">
                   {job.avgPhotosPerSecond.toFixed(2)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Taradı/sn</p>
+                <p className="text-lg font-semibold text-navy-900">
+                  {job.scannedPhotosPerSecond.toFixed(2)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">İşledi/sn</p>
+                <p className="text-lg font-semibold text-navy-900">
+                  {job.processedPhotosPerSecond.toFixed(2)}
                 </p>
               </div>
               <div>
@@ -176,7 +264,7 @@ export default function BulkEnrollmentPage() {
                 <span>İşlenen</span>
                 <span>
                   {job.requestedPhotos > 0
-                    ? Math.min(100, Math.round((job.totalEnrolled / job.requestedPhotos) * 100))
+                    ? Math.min(100, Math.round((job.totalProcessed / job.requestedPhotos) * 100))
                     : 0}
                   %
                 </span>
@@ -187,7 +275,7 @@ export default function BulkEnrollmentPage() {
                   style={{
                     width: `${
                       job.requestedPhotos > 0
-                        ? Math.min(100, (job.totalEnrolled / job.requestedPhotos) * 100)
+                        ? Math.min(100, (job.totalProcessed / job.requestedPhotos) * 100)
                         : 0
                     }%`,
                   }}
@@ -243,9 +331,9 @@ export default function BulkEnrollmentPage() {
               Vazgeç
             </Button>
             <Button
-variant="danger"
+              variant="danger"
               onClick={() => {
-                if (jobId) cancelJob.mutate(jobId)
+                if (candidateJobId) cancelJob.mutate(candidateJobId)
                 setConfirmOpen(false)
               }}
               disabled={cancelJob.isPending}

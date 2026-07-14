@@ -21,11 +21,17 @@ class Settings(BaseSettings):
     worker_role: str = "online"
     vggface_dataset_path: Path = Path("/datasets/vgg-face")
     vggface_target_active_photos: int = 1_000_000
-    bulk_extract_batch_size: int = 512
+    lfw_dataset_path: Path = Path("/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled")
+    lfw_target_active_photos: int = 1_000_000
+    casia_dataset_path: Path = Path("/datasets/casia-webface")
+    casia_target_active_photos: int = 1_000_000
+    bulk_extract_batch_size: int = 256
     bulk_max_persistence_concurrency: int = 32
     bulk_activation_batch_size: int = 2048
 
     model_pack: str = "antelopev2"
+    embedding_model_version: str = "retinaface_r50"
+    pipeline_compatibility_version: str = "v1"
     inference_backend: str = "tensorrt"
     detector_model_path: Path = Path("/models/detector.onnx")
     embedder_model_path: Path = Path("/models/recognizer.onnx")

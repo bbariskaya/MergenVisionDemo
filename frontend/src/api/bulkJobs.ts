@@ -39,6 +39,38 @@ export function useStartVggfaceBulkJob() {
   })
 }
 
+export function useStartLfwBulkJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (maxPhotos?: number) =>
+      apiFetch<VggfaceBulkJob>('/bulk-jobs/lfw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxPhotos }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.bulkJob(data.jobId), data)
+      queryClient.setQueryData(queryKeys.latestBulkJob(), data)
+    },
+  })
+}
+
+export function useStartCasiaBulkJob() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (maxPhotos?: number) =>
+      apiFetch<VggfaceBulkJob>('/bulk-jobs/casia', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxPhotos }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.bulkJob(data.jobId), data)
+      queryClient.setQueryData(queryKeys.latestBulkJob(), data)
+    },
+  })
+}
+
 export function useCancelBulkJob() {
   const queryClient = useQueryClient()
   return useMutation({

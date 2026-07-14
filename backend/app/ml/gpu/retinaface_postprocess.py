@@ -388,15 +388,9 @@ class RetinaFacePostprocess:
         stream: int,
         dtype: type = ctypes.c_float,
     ) -> DeviceTensor:
-        if any(s == 0 for s in shape):
-            return DeviceTensor(
-                ptr=0,
-                shape=shape,
-                dtype=dtype,
-                device_id=self._device_id,
-                owner=self._arena,
-                stream=stream,
-            )
+        # Always use the arena so zero-size tensors get a non-null backing
+        # pointer; DeviceTensor rejects ptr=0 and count==0 kernels never
+        # dereference the pointer anyway.
         return self._arena.reserve(shape, dtype, stream=stream)
 
     def close(self) -> None:

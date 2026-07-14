@@ -63,7 +63,7 @@ def _build_identity(folder_path: Path) -> EnrollmentIdentity:
     display_name = _display_name(folder_name)
     hmac_val = identity_hmac(identity_key, settings.hmac_key)
     photos = tuple(
-        EnrollmentPhoto(path=p, content_sha256=_content_sha256(p))
+        EnrollmentPhoto(path=p, content_sha256="")
         for p in _list_photo_paths(folder_path)
     )
     return EnrollmentIdentity(
@@ -72,44 +72,36 @@ def _build_identity(folder_path: Path) -> EnrollmentIdentity:
         identity_hmac=hmac_val,
         person_id=str(derive_person_id(hmac_val)),
         face_identity_id=str(derive_face_identity_id(hmac_val)),
+        source_dataset="vggface",
         photos=photos,
     )
 
 
 def vggface_preflight(root: Path) -> VggfacePreflight:
-    """Stream through the dataset once and return sanitized counts.
+    """Return sanitized counts without reading image bytes.
 
-    Duplicate detection is content-based (same SHA-256) so it does not depend on
-    filesystem paths.  Only lightweight hashes are retained, not byte buffers.
+    Content SHA-256 hashing is deferred to extraction time; duplicate detection
+    is skipped during preflight to avoid scanning every file on every job start.
     """
     if not root.is_dir():
         raise ValueError(f"VGGFace root not found: {root}")
     faces_root = root / "faces" if (root / "faces").is_dir() else root
     identity_count = 0
     photo_count = 0
-    duplicate_count = 0
     corrupt_count = 0
-    seen_hashes: set[str] = set()
 
     for folder in sorted(p for p in faces_root.iterdir() if p.is_dir()):
         identity_count += 1
-        for photo_path in _list_photo_paths(folder):
-            try:
-                sha = _content_sha256(photo_path)
-            except Exception:
-                corrupt_count += 1
-                continue
-            photo_count += 1
-            if sha in seen_hashes:
-                duplicate_count += 1
-            else:
-                seen_hashes.add(sha)
+        try:
+            photo_count += len(_list_photo_paths(folder))
+        except OSError:
+            corrupt_count += 1
 
     return VggfacePreflight(
         root=root,
         identity_count=identity_count,
         photo_count=photo_count,
-        duplicate_photo_count=duplicate_count,
+        duplicate_photo_count=0,
         corrupt_paths_count=corrupt_count,
     )
 
@@ -127,6 +119,7 @@ def stream_vggface_manifest(
     root: Path,
     *,
     max_identities: int | None = None,
+    max_photos: int | None = None,
     shard_index: int | None = None,
     num_shards: int | None = None,
     resume_after_identity_key: str | None = None,
@@ -153,6 +146,7 @@ def stream_vggface_manifest(
             raise ValueError("shard_index out of range")
 
     built = 0
+    photos_seen = 0
     for folder in folders:
         folder_name = folder.name.strip()
         identity_key = _identity_key(folder_name)
@@ -162,7 +156,22 @@ def stream_vggface_manifest(
             continue
         identity = _build_identity(folder)
         if identity.photos:
+            if max_photos is not None and photos_seen + len(identity.photos) > max_photos:
+                remaining = max(0, max_photos - photos_seen)
+                if remaining > 0:
+                    identity = EnrollmentIdentity(
+                        identity_key=identity.identity_key,
+                        display_name=identity.display_name,
+                        identity_hmac=identity.identity_hmac,
+                        person_id=identity.person_id,
+                        face_identity_id=identity.face_identity_id,
+                        source_dataset=identity.source_dataset,
+                        photos=identity.photos[:remaining],
+                    )
+                    yield identity
+                break
             yield identity
+            photos_seen += len(identity.photos)
             built += 1
             if max_identities is not None and built >= max_identities:
                 break

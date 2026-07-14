@@ -155,13 +155,21 @@ class FaceVectorStore:
     async def initialize(self) -> None:
         exists = await self._client.collection_exists(self._collection)
         if not exists:
-            await self._client.create_collection(
-                collection_name=self._collection,
-                vectors_config=models.VectorParams(
-                    size=self._vector_size,
-                    distance=self._distance,
-                ),
-            )
+            try:
+                await self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config=models.VectorParams(
+                        size=self._vector_size,
+                        distance=self._distance,
+                    ),
+                )
+            except Exception as exc:
+                # Another worker/API may have created the collection in the
+                # brief window between exists-check and create.
+                if "already exists" in str(exc).lower():
+                    logger.info("Qdrant collection %r already created by peer", self._collection)
+                else:
+                    raise
             await self._ensure_indexes()
             return
 

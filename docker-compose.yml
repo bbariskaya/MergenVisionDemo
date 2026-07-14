@@ -51,12 +51,17 @@ services:
     env_file: [.env]
     environment:
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
+      LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
+      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
     volumes:
+      - ./backend:/app
       - ./artifacts:/app/artifacts
       - ./artifacts/models:/models:ro
       - ./artifacts/engines:/engines:ro
       - ./lfw:/app/lfw:ro
       - ${VGGFACE_DATASET_PATH:-./vgg-face}:/datasets/vgg-face:ro
+      - ${LFW_DATASET_PATH:-./lfw}:/datasets/lfw:ro
+      - ${CASIA_DATASET_PATH:-./datasets/casia-webface}:/datasets/casia-webface:ro
       - api_tmp:/tmp
     depends_on:
       postgres: {condition: service_healthy}
@@ -77,42 +82,6 @@ services:
       start_period: 120s
     ports: ["8000:8000"]
 
-  gpu-worker-0:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command: ["uvicorn", "app.workers.gpu_worker:app", "--host", "0.0.0.0", "--port", "8001"]
-    env_file: [.env]
-    environment:
-      WORKER_ID: gpu-worker-0
-      WORKER_ROLE: online
-      HOST_GPU_DEVICE_ID: ${GPU_WORKER_0_DEVICE_ID:-0}
-      API_PORT: 8001
-      PYTHONUNBUFFERED: "1"
-    volumes:
-      - ./artifacts:/app/artifacts
-      - ./artifacts/models:/models:ro
-      - ./artifacts/engines:/engines:ro
-      - ./lfw:/app/lfw:ro
-      - worker0_tmp:/tmp
-    depends_on:
-      postgres: {condition: service_healthy}
-      minio: {condition: service_healthy}
-      qdrant: {condition: service_healthy}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${GPU_WORKER_0_DEVICE_ID:-0}"]
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health/ready >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 180s
-
   gpu-worker-1:
     build:
       context: ./backend
@@ -124,14 +93,19 @@ services:
       WORKER_ROLE: bulk
       HOST_GPU_DEVICE_ID: ${GPU_WORKER_1_DEVICE_ID:-1}
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
+      LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
+      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
       API_PORT: 8001
       PYTHONUNBUFFERED: "1"
     volumes:
+      - ./backend:/app
       - ./artifacts:/app/artifacts
       - ./artifacts/models:/models:ro
       - ./artifacts/engines:/engines:ro
       - ./lfw:/app/lfw:ro
       - ${VGGFACE_DATASET_PATH:-./vgg-face}:/datasets/vgg-face:ro
+      - ${LFW_DATASET_PATH:-./lfw}:/datasets/lfw:ro
+      - ${CASIA_DATASET_PATH:-./datasets/casia-webface}:/datasets/casia-webface:ro
       - worker1_tmp:/tmp
     depends_on:
       postgres: {condition: service_healthy}
@@ -162,14 +136,19 @@ services:
       WORKER_ROLE: bulk
       HOST_GPU_DEVICE_ID: ${GPU_WORKER_2_DEVICE_ID:-2}
       VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
+      LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
+      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
       API_PORT: 8001
       PYTHONUNBUFFERED: "1"
     volumes:
+      - ./backend:/app
       - ./artifacts:/app/artifacts
       - ./artifacts/models:/models:ro
       - ./artifacts/engines:/engines:ro
       - ./lfw:/app/lfw:ro
       - ${VGGFACE_DATASET_PATH:-./vgg-face}:/datasets/vgg-face:ro
+      - ${LFW_DATASET_PATH:-./lfw}:/datasets/lfw:ro
+      - ${CASIA_DATASET_PATH:-./datasets/casia-webface}:/datasets/casia-webface:ro
       - worker2_tmp:/tmp
     depends_on:
       postgres: {condition: service_healthy}
@@ -181,6 +160,49 @@ services:
           devices:
             - driver: nvidia
               device_ids: ["${GPU_WORKER_2_DEVICE_ID:-2}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  gpu-worker-0:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["uvicorn", "app.workers.gpu_worker:app", "--host", "0.0.0.0", "--port", "8001"]
+    env_file: [.env]
+    environment:
+      WORKER_ID: gpu-worker-0
+      WORKER_ROLE: bulk
+      HOST_GPU_DEVICE_ID: ${GPU_WORKER_0_DEVICE_ID:-0}
+      VGGFACE_DATASET_PATH: ${VGGFACE_DATASET_PATH:-/datasets/vgg-face}
+      LFW_DATASET_PATH: ${LFW_DATASET_PATH:-/datasets/lfw/lfw-deepfunneled/lfw-deepfunneled}
+      CASIA_DATASET_PATH: ${CASIA_DATASET_PATH:-/datasets/casia-webface}
+      API_PORT: 8001
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./backend:/app
+      - ./artifacts:/app/artifacts
+      - ./artifacts/models:/models:ro
+      - ./artifacts/engines:/engines:ro
+      - ./lfw:/app/lfw:ro
+      - ${VGGFACE_DATASET_PATH:-./vgg-face}:/datasets/vgg-face:ro
+      - ${LFW_DATASET_PATH:-./lfw}:/datasets/lfw:ro
+      - ${CASIA_DATASET_PATH:-./datasets/casia-webface}:/datasets/casia-webface:ro
+      - worker0_tmp:/tmp
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      qdrant: {condition: service_healthy}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_WORKER_0_DEVICE_ID:-0}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health/ready >/dev/null"]

@@ -21,10 +21,11 @@ from app.core.ids import (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class EnrollmentPhoto:
     path: Path
     content_sha256: str
+    data: bytes | None = None
 
     @property
     def photo_id(self) -> str:
@@ -38,6 +39,7 @@ class EnrollmentIdentity:
     identity_hmac: str
     person_id: str
     face_identity_id: str
+    source_dataset: str
     photos: tuple[EnrollmentPhoto, ...]
 
 
@@ -73,10 +75,11 @@ def build_lfw_manifest(
     """
     identities: list[EnrollmentIdentity] = []
     for person_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        identity_key, display_name = normalize_lfw_folder_name(person_dir.name)
+        raw_key, display_name = normalize_lfw_folder_name(person_dir.name)
+        identity_key = f"lfw:{raw_key}"
         photos = sorted(
             (
-                EnrollmentPhoto(path=p, content_sha256=_content_sha256(p))
+                EnrollmentPhoto(path=p, content_sha256="")
                 for p in person_dir.iterdir()
                 if p.is_file() and p.suffix.lower() in extensions
             ),
@@ -92,6 +95,7 @@ def build_lfw_manifest(
                 identity_hmac=hmac_val,
                 person_id=str(derive_person_id(hmac_val)),
                 face_identity_id=str(derive_face_identity_id(hmac_val)),
+                source_dataset="lfw",
                 photos=tuple(photos),
             )
         )
@@ -112,9 +116,50 @@ def shard_by_person_id(
     return tuple(tuple(sorted(s, key=lambda i: i.identity_key)) for s in shards)
 
 
-def expected_cardinality(root: Path) -> tuple[int, int]:
+def build_casia_manifest(
+    root: Path,
+    *,
+    extensions: tuple[str, ...] = (".jpg", ".jpeg", ".png"),
+) -> tuple[EnrollmentIdentity, ...]:
+    """Build a manifest from a CASIA-WebFace folder tree.
+
+    CASIA identity folders are already prefixed (e.g. ``casia_0000045``) so we
+    use the folder name directly without adding a dataset namespace.
+    """
+    identities: list[EnrollmentIdentity] = []
+    for person_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        key = person_dir.name
+        photos = sorted(
+            (
+                EnrollmentPhoto(path=p, content_sha256="")
+                for p in person_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in extensions
+            ),
+            key=lambda photo: photo.path.name,
+        )
+        if not photos:
+            continue
+        hmac_val = identity_hmac(key, settings.hmac_key)
+        identities.append(
+            EnrollmentIdentity(
+                identity_key=key,
+                display_name=key,
+                identity_hmac=hmac_val,
+                person_id=str(derive_person_id(hmac_val)),
+                face_identity_id=str(derive_face_identity_id(hmac_val)),
+                source_dataset="casia",
+                photos=tuple(photos),
+            )
+        )
+    return tuple(sorted(identities, key=lambda identity: identity.identity_key))
+
+
+def expected_cardinality(root: Path, *, dataset: str = "lfw") -> tuple[int, int]:
     """Return (num_persons, num_photos) before any import."""
-    identities = build_lfw_manifest(root)
+    if dataset == "casia":
+        identities = build_casia_manifest(root)
+    else:
+        identities = build_lfw_manifest(root)
     return len(identities), sum(len(i.photos) for i in identities)
 
 

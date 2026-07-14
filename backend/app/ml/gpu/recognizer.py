@@ -91,7 +91,9 @@ class GpuRecognizer:
 
         embeddings: list[DeviceTensor] = []
         for offset in range(0, n, max_batch):
-            chunk = self._slice_faces(faces, offset, min(max_batch, n - offset))
+            chunk = self._slice_faces(
+                faces, offset, min(max_batch, n - offset), active_stream
+            )
             embeddings.append(self._embed_chunk(chunk, active_stream, status=status))
 
         return self._concat_embeddings(embeddings, active_stream)

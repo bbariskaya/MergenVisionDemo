@@ -1,43 +1,35 @@
-"""Idempotent, person-grouped bulk enrollment used by worker processes.
+"""Fast, person-grouped bulk enrollment used by worker processes.
 
-The service:
-- builds a deterministic manifest from LFW-style folders
-- shards by ``person_id`` so each GPU process owns disjoint identities
-- extracts faces in batches, then persists each photo only if its deterministic
-  ``sample_id`` is not already present
-- records durable Qdrant upserts with ``wait=True``
-- writes a ``process_record`` / ``process_event`` audit trail with no raw PII
+The service preserves the identity contract:
+
+* One dataset folder = exactly one ``Person`` row.
+* Each ``Person`` owns one active ``FaceIdentity``.
+* Each valid photo in that folder becomes one ``PersonPhoto`` + one ``FaceSample``.
+* No per-photo "exists?" / "active?" SELECTs on fresh import.
+* Deterministic IDs make cancel/resume idempotent without duplicates.
+* Photos and embeddings land in the same MinIO namespace and Qdrant collection
+  regardless of source dataset.
 """
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
 import hashlib
+import io
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable
-
-from sqlalchemy import update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from typing import Any, Callable, Iterable
 
 import numpy as np
-import sqlalchemy as sa
 from qdrant_client import models
-from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.ids import (
-    derive_face_identity_id,
-    derive_person_id,
-    derive_photo_id,
-    derive_sample_id,
-    identity_hmac,
-    new_uuid7,
-)
+from app.core.ids import derive_sample_id
 from app.domain.models import (
     FaceIdentity,
     FaceSample,
@@ -58,40 +50,40 @@ class EnrollmentCancelled(Exception):
     """Raised when the running enrollment shard is cooperatively cancelled."""
 
 
-@dataclass(frozen=True)
+class _DecodeError(Exception):
+    """Local marker for a photo that could not be read or decoded."""
+
+
+@dataclass
 class _PhotoTask:
     identity: EnrollmentIdentity
     photo: EnrollmentPhoto
-    index: int
-
-
-@dataclass(frozen=True)
-class _StagedFace:
-    identity: EnrollmentIdentity
-    photo: EnrollmentPhoto
-    person_id: uuid.UUID
-    photo_id: uuid.UUID
-    sample_id: uuid.UUID
-    face: GpuFaceExtraction
 
 
 @dataclass
 class _ShardResult:
-    identities: int = 0
-    photos: int = 0
-    faces_enrolled: int = 0
-    faces_duplicate: int = 0
+    discovered_identities: int = 0
+    discovered_photos: int = 0
+    processed: int = 0
+    enrolled: int = 0
     no_face: int = 0
-    errors: int = 0
-    total_scanned: int = 0
-    total_processed: int = 0
+    decode_error: int = 0
+    persistence_error: int = 0
+    failed: int = 0
+    fatal_error: bool = False
+    fatal_code: str | None = None
+    fatal_stage: str | None = None
+    fatal_message: str | None = None
     extraction_ms: float = 0.0
     io_ms: float = 0.0
+    total_batches: int = 0
     messages: list[str] = field(default_factory=list)
+    status: str = "completed"
+    worker_name: str | None = None
 
 
 class BulkEnrollmentService:
-    """Enroll a disjoint shard of identities with idempotent cross-store writes."""
+    """Enroll a disjoint shard of identities deterministically and in bulk."""
 
     def __init__(
         self,
@@ -102,10 +94,10 @@ class BulkEnrollmentService:
         pipeline_lock: asyncio.Lock,
         *,
         gpu_executor: concurrent.futures.Executor | None = None,
+        io_executor: concurrent.futures.Executor | None = None,
         extract_batch_size: int | None = None,
         qdrant_wait: bool = False,
         max_persistence_concurrency: int | None = None,
-        activation_batch_size: int | None = None,
     ) -> None:
         self._db = db
         self._storage = storage
@@ -113,10 +105,11 @@ class BulkEnrollmentService:
         self._pipeline = pipeline
         self._pipeline_lock = pipeline_lock
         self._gpu_executor = gpu_executor
+        self._io_executor = io_executor
         self._extract_batch_size = extract_batch_size or settings.bulk_extract_batch_size
-        self._activation_batch_size = activation_batch_size or settings.bulk_activation_batch_size
         self._qdrant_wait = qdrant_wait
         self._model_pack = settings.model_pack
+        self._embedding_model_version = settings.embedding_model_version
         self._persist_semaphore = asyncio.Semaphore(
             max_persistence_concurrency or settings.bulk_max_persistence_concurrency
         )
@@ -140,14 +133,14 @@ class BulkEnrollmentService:
                     lambda: self._pipeline.extract_batch(
                         image_bytes_list,
                         pick_largest=True,
-                        max_batch=256,
+                        max_batch=self._extract_batch_size,
                     ),
                 )
             else:
                 raw = self._pipeline.extract_batch(
                     image_bytes_list,
                     pick_largest=True,
-                    max_batch=256,
+                    max_batch=self._extract_batch_size,
                 )
             return [
                 GpuFaceExtraction(
@@ -161,256 +154,193 @@ class BulkEnrollmentService:
                 for f in raw
             ]
 
-    async def _read_photo_bytes(self, path: Path) -> bytes:
-        return await asyncio.to_thread(path.read_bytes)
+    async def _read_photo(self, photo: EnrollmentPhoto) -> bytes:
+        if photo.data is not None:
+            return photo.data
+        loop = asyncio.get_running_loop()
+        executor = self._io_executor
+        if executor is not None:
+            return await loop.run_in_executor(executor, photo.path.read_bytes)
+        return await loop.run_in_executor(None, photo.path.read_bytes)
 
-    async def _ensure_identities(
-        self,
-        identities: tuple[EnrollmentIdentity, ...],
-    ) -> dict[str, uuid.UUID]:
-        """Insert missing FaceIdentity / Person rows and return person_id map."""
-        hmac_to_identity = {
-            identity.identity_hmac: identity for identity in identities
-        }
-        existing_face_ids = await self._db.execute(
-            select(FaceIdentity.identity_lookup_hmac, FaceIdentity.face_identity_id).where(
-                FaceIdentity.identity_lookup_hmac.in_(hmac_to_identity.keys())
-            )
-        )
-        existing_hmacs = {row[0] for row in existing_face_ids.all()}
+    async def _read_one(self, photo: EnrollmentPhoto) -> bytes:
+        try:
+            t0 = time.perf_counter()
+            data = await self._read_photo(photo)
+            return data
+        except Exception as exc:
+            raise _DecodeError(f"read/decode failed for {photo.path}: {exc}") from exc
+        finally:
+            pass
 
-        missing = [
-            identity for identity in identities
-            if identity.identity_hmac not in existing_hmacs
-        ]
-        if missing:
-            now = _utc_now()
-            face_rows = [
-                {
-                    "face_identity_id": uuid.UUID(identity.face_identity_id),
-                    "identity_lookup_hmac": identity.identity_hmac,
-                    "display_name": identity.display_name,
-                    "external_identity_hash": identity.identity_hmac,
-                    "is_active": True,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                for identity in missing
-            ]
-            person_rows = [
-                {
-                    "person_id": uuid.UUID(identity.person_id),
-                    "face_identity_id": uuid.UUID(identity.face_identity_id),
-                    "first_name": self._split_name(identity.display_name)[0],
-                    "last_name": self._split_name(identity.display_name)[1],
-                    "national_id_lookup_hmac": identity.identity_hmac,
-                    "national_id_masked": _mask_hmac(identity.identity_hmac),
-                    "details": {},
-                    "is_active": True,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                for identity in missing
-            ]
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
+    async def _ensure_identities(self, identities: Iterable[EnrollmentIdentity]) -> None:
+        """Blind bulk upsert of FaceIdentity and Person rows.
 
-            await self._db.execute(
-                pg_insert(FaceIdentity)
-                .values(face_rows)
-                .on_conflict_do_nothing(index_elements=["identity_lookup_hmac"])
-            )
-            await self._db.execute(
-                pg_insert(Person)
-                .values(person_rows)
-                .on_conflict_do_nothing(index_elements=["national_id_lookup_hmac"])
-            )
-            await self._db.flush()
-
-        return {identity.identity_hmac: uuid.UUID(identity.person_id) for identity in identities}
-
-    async def _stage_face(
-        self,
-        identity: EnrollmentIdentity,
-        photo: EnrollmentPhoto,
-        person_id: uuid.UUID,
-        face: GpuFaceExtraction,
-    ) -> tuple[_StagedFace | None, bool]:
-        """Stage one face for idempotent cross-store activation.
-
-        Returns the staged descriptor, or ``(None, True)`` when the sample is
-        already active (duplicate).
+        No SELECTs for existence.  ``ON CONFLICT DO NOTHING`` makes re-runs and
+        resume safe because all IDs are deterministic.
         """
-        photo_id = uuid.UUID(photo.photo_id)
-        sample_id = derive_sample_id(photo_id, self._model_pack)
-
-        existing = await self._db.get(FaceSample, sample_id)
-        if existing is not None and existing.status == "active":
-            return None, True
-
-        async with self._persist_semaphore:
-            object_key = f"enrollments/{person_id}/{photo_id}"
-            photo_exists = await self._db.get(PersonPhoto, photo_id)
-            if photo_exists is None:
-                if not await self._storage.object_exists(object_key):
-                    data = await self._read_photo_bytes(photo.path)
-                    await self._storage.put_object(
-                        object_key=object_key,
-                        data=__import__("io").BytesIO(data),
-                        length=len(data),
-                        content_type="application/octet-stream",
-                    )
-                now = _utc_now()
-                self._db.add(
-                    PersonPhoto(
-                        photo_id=photo_id,
-                        person_id=person_id,
-                        object_key=object_key,
-                        content_sha256=photo.content_sha256,
-                        mime_type="application/octet-stream",
-                        width=0,
-                        height=0,
-                        status="staged",
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-
-            if existing is None:
-                self._db.add(
-                    FaceSample(
-                        sample_id=sample_id,
-                        person_id=person_id,
-                        photo_id=photo_id,
-                        detector_model=self._model_pack,
-                        embedding_model=self._model_pack,
-                        bbox=_bbox_to_dict(face.bbox),
-                        landmarks=face.landmarks.tolist(),
-                        quality_score=float(face.score),
-                        status="staged",
-                        created_at=_utc_now(),
-                        updated_at=_utc_now(),
-                    )
-                )
-            else:
-                existing.status = "staged"
-
-        return (
-            _StagedFace(
-                identity=identity,
-                photo=photo,
-                person_id=person_id,
-                photo_id=photo_id,
-                sample_id=sample_id,
-                face=face,
-            ),
-            False,
+        unique = {identity.identity_hmac: identity for identity in identities}
+        if not unique:
+            return
+        now = _utc_now()
+        face_rows = [
+            {
+                "face_identity_id": uuid.UUID(identity.face_identity_id),
+                "identity_lookup_hmac": identity.identity_hmac,
+                "display_name": identity.display_name,
+                "external_identity_hash": identity.identity_hmac,
+                "is_active": True,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for identity in unique.values()
+        ]
+        person_rows = [
+            {
+                "person_id": uuid.UUID(identity.person_id),
+                "face_identity_id": uuid.UUID(identity.face_identity_id),
+                "first_name": self._split_name(identity.display_name)[0],
+                "last_name": self._split_name(identity.display_name)[1],
+                "national_id_lookup_hmac": identity.identity_hmac,
+                "national_id_masked": _mask_hmac(identity.identity_hmac),
+                "details": {"source_dataset": identity.source_dataset},
+                "is_active": True,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for identity in unique.values()
+        ]
+        await self._db.execute(
+            pg_insert(FaceIdentity)
+            .values(face_rows)
+            .on_conflict_do_nothing(index_elements=["identity_lookup_hmac"])
         )
+        await self._db.execute(
+            pg_insert(Person)
+            .values(person_rows)
+            .on_conflict_do_nothing(index_elements=["national_id_lookup_hmac"])
+        )
+        await self._db.flush()
 
-    async def _stage_batch(
+    async def _upload_photo(
         self,
-        tasks_faces: list[tuple[_PhotoTask, GpuFaceExtraction]],
-        person_id_map: dict[str, uuid.UUID],
-        result: _ShardResult,
-        staged_buffer: list[_StagedFace],
-    ) -> None:
-        """Stage a chunk with one batched duplicate lookup and conflict-safe upserts."""
-        work: list[tuple[_PhotoTask, GpuFaceExtraction, uuid.UUID, uuid.UUID, uuid.UUID]] = []
-        for task, face in tasks_faces:
-            person_id = person_id_map[task.identity.identity_hmac]
-            photo_id = uuid.UUID(task.photo.photo_id)
-            sample_id = derive_sample_id(photo_id, self._model_pack)
-            work.append((task, face, person_id, photo_id, sample_id))
-
-        photo_ids = [photo_id for _, _, _, photo_id, _ in work]
-
-        # Single batched lookup: PostgreSQL is the hot-path duplicate authority.
-        existing_photos: set[uuid.UUID] = set()
-        active_samples: set[uuid.UUID] = set()
-        existing_samples: set[uuid.UUID] = set()
-
-        photo_rows = await self._db.execute(
-            select(PersonPhoto.photo_id).where(PersonPhoto.photo_id.in_(photo_ids))
-        )
-        existing_photos = {r[0] for r in photo_rows.all()}
-
-        sample_rows = await self._db.execute(
-            select(FaceSample.photo_id, FaceSample.sample_id, FaceSample.status).where(
-                FaceSample.photo_id.in_(photo_ids)
+        person_id: uuid.UUID,
+        photo_id: uuid.UUID,
+        data: bytes,
+    ) -> str:
+        object_key = f"enrollments/{person_id}/{photo_id}"
+        async with self._persist_semaphore:
+            await self._storage.put_object(
+                object_key=object_key,
+                data=io.BytesIO(data),
+                length=len(data),
+                content_type="application/octet-stream",
             )
-        )
-        for photo_id, sample_id, status in sample_rows.all():
-            existing_samples.add(photo_id)
-            if status == "active":
-                active_samples.add(photo_id)
+        return object_key
 
-        # Partition work into duplicates and new/staged faces.
-        to_stage = []
-        for task, face, person_id, photo_id, sample_id in work:
-            if photo_id in active_samples:
-                result.faces_duplicate += 1
-                continue
-            to_stage.append((task, face, person_id, photo_id, sample_id))
-
-        if not to_stage:
+    async def _persist_batch(
+        self,
+        items: list[tuple[EnrollmentIdentity, EnrollmentPhoto, GpuFaceExtraction, bytes]],
+    ) -> None:
+        """Persist one extracted chunk with batched upserts across all stores."""
+        if not items:
             return
 
-        async def _upload_photo(
-            task: _PhotoTask,
-            person_id: uuid.UUID,
-            photo_id: uuid.UUID,
-        ) -> None:
-            if photo_id in existing_photos:
-                return
-            async with self._persist_semaphore:
-                object_key = f"enrollments/{person_id}/{photo_id}"
-                data = await self._read_photo_bytes(task.photo.path)
-                await self._storage.put_object(
-                    object_key=object_key,
-                    data=__import__("io").BytesIO(data),
-                    length=len(data),
-                    content_type="application/octet-stream",
-                )
-
-        await asyncio.gather(*(_upload_photo(task, person_id, photo_id) for task, _, person_id, photo_id, _ in to_stage))
-
         now = _utc_now()
+
+        # 1. Ensure identities for everyone in this chunk (batched, no SELECTs).
+        await self._ensure_identities([identity for identity, _, _, _ in items])
+
+        # 2. Upload photo bytes to MinIO concurrently with bounded parallelism.
+        upload_args = [
+            (uuid.UUID(identity.person_id), uuid.UUID(photo.photo_id), data)
+            for identity, photo, _, data in items
+        ]
+        upload_results = await asyncio.gather(
+            *(self._upload_photo(*args) for args in upload_args),
+            return_exceptions=True,
+        )
+        object_keys: list[str] = []
+        for result in upload_results:
+            if isinstance(result, Exception):
+                raise result
+            object_keys.append(result)
+
+        # Deduplicate within batch to avoid Postgres cardinality violation on
+        # ON CONFLICT DO UPDATE when the same photo_id appears twice.
+        unique_items: list[tuple[EnrollmentIdentity, EnrollmentPhoto, ExtractedFace, bytes]] = []
+        unique_object_keys: list[str] = []
+        seen_photo_ids: set[str] = set()
+        for (identity, photo, face, raw), object_key in zip(items, object_keys):
+            if photo.photo_id in seen_photo_ids:
+                continue
+            seen_photo_ids.add(photo.photo_id)
+            unique_items.append((identity, photo, face, raw))
+            unique_object_keys.append(object_key)
+        items = unique_items
+        object_keys = unique_object_keys
+
+        # 3. PostgreSQL bulk upserts (active immediately).
         photo_rows = [
             {
-                "photo_id": photo_id,
-                "person_id": person_id,
-                "object_key": f"enrollments/{person_id}/{photo_id}",
-                "content_sha256": task.photo.content_sha256,
+                "photo_id": uuid.UUID(photo.photo_id),
+                "person_id": uuid.UUID(identity.person_id),
+                "object_key": object_key,
+                "content_sha256": photo.content_sha256,
                 "mime_type": "application/octet-stream",
                 "width": 0,
                 "height": 0,
-                "status": "staged",
+                "status": "active",
                 "created_at": now,
                 "updated_at": now,
             }
-            for task, _, person_id, photo_id, _ in to_stage
+            for (identity, photo, _, _), object_key in zip(items, object_keys)
         ]
         sample_rows = [
             {
-                "sample_id": sample_id,
-                "person_id": person_id,
-                "photo_id": photo_id,
+                "sample_id": derive_sample_id(uuid.UUID(photo.photo_id), self._embedding_model_version),
+                "person_id": uuid.UUID(identity.person_id),
+                "photo_id": uuid.UUID(photo.photo_id),
                 "detector_model": self._model_pack,
-                "embedding_model": self._model_pack,
+                "embedding_model": self._embedding_model_version,
                 "bbox": _bbox_to_dict(face.bbox),
                 "landmarks": face.landmarks.tolist(),
                 "quality_score": float(face.score),
-                "status": "staged",
+                "status": "active",
                 "created_at": now,
                 "updated_at": now,
             }
-            for _, face, person_id, photo_id, sample_id in to_stage
+            for identity, photo, face, _ in items
+        ]
+        qdrant_points = [
+            models.PointStruct(
+                id=str(derive_sample_id(uuid.UUID(photo.photo_id), self._embedding_model_version)),
+                vector=face.embedding.tolist(),
+                payload={
+                    "sampleId": str(derive_sample_id(uuid.UUID(photo.photo_id), self._embedding_model_version)),
+                    "photoId": str(uuid.UUID(photo.photo_id)),
+                    "personId": str(uuid.UUID(identity.person_id)),
+                    "active": True,
+                    "modelVersion": self._embedding_model_version,
+                },
+            )
+            for identity, photo, face, _ in items
         ]
 
         if photo_rows:
             await self._db.execute(
                 pg_insert(PersonPhoto)
                 .values(photo_rows)
-                .on_conflict_do_nothing(index_elements=["photo_id"])
+                .on_conflict_do_update(
+                    index_elements=["photo_id"],
+                    set_={
+                        "person_id": pg_insert(PersonPhoto).excluded.person_id,
+                        "object_key": pg_insert(PersonPhoto).excluded.object_key,
+                        "content_sha256": pg_insert(PersonPhoto).excluded.content_sha256,
+                        "status": "active",
+                        "updated_at": now,
+                    },
+                )
             )
         if sample_rows:
             await self._db.execute(
@@ -419,64 +349,17 @@ class BulkEnrollmentService:
                 .on_conflict_do_update(
                     index_elements=["photo_id"],
                     set_={
-                        "status": "staged",
-                        "detector_model": self._model_pack,
-                        "embedding_model": self._model_pack,
+                        "person_id": pg_insert(FaceSample).excluded.person_id,
+                        "detector_model": pg_insert(FaceSample).excluded.detector_model,
+                        "embedding_model": pg_insert(FaceSample).excluded.embedding_model,
                         "bbox": pg_insert(FaceSample).excluded.bbox,
                         "landmarks": pg_insert(FaceSample).excluded.landmarks,
                         "quality_score": pg_insert(FaceSample).excluded.quality_score,
+                        "status": "active",
                         "updated_at": now,
                     },
                 )
             )
-
-        for task, face, person_id, photo_id, sample_id in to_stage:
-            result.faces_enrolled += 1
-            staged_buffer.append(
-                _StagedFace(
-                    identity=task.identity,
-                    photo=task.photo,
-                    person_id=person_id,
-                    photo_id=photo_id,
-                    sample_id=sample_id,
-                    face=face,
-                )
-            )
-
-    async def _activate_buffer(self, staged: list[_StagedFace]) -> None:
-        """Promote a buffered set of staged faces to active in PG and Qdrant.
-
-        Uses DML and a single batched Qdrant upsert (active=True) to minimize
-        per-photo round-trips.
-        """
-        if not staged:
-            return
-        now = _utc_now()
-        photo_ids = [item.photo_id for item in staged]
-        await self._db.execute(
-            update(PersonPhoto)
-            .where(PersonPhoto.photo_id.in_(photo_ids))
-            .values(status="active", updated_at=now)
-        )
-        await self._db.execute(
-            update(FaceSample)
-            .where(FaceSample.photo_id.in_(photo_ids))
-            .values(status="active", updated_at=now)
-        )
-        qdrant_points = [
-            models.PointStruct(
-                id=str(item.sample_id),
-                vector=item.face.embedding.tolist(),
-                payload={
-                    "sampleId": str(item.sample_id),
-                    "photoId": str(item.photo_id),
-                    "personId": str(item.person_id),
-                    "active": True,
-                    "modelVersion": self._model_pack,
-                },
-            )
-            for item in staged
-        ]
         await self._upsert_qdrant(qdrant_points)
 
     async def _upsert_qdrant(
@@ -487,30 +370,224 @@ class BulkEnrollmentService:
             return
         await self._vector_store.upsert_batch(points, wait=self._qdrant_wait)
 
+    async def _read_and_extract(
+        self,
+        tasks: list[tuple[EnrollmentIdentity, EnrollmentPhoto]],
+        result: _ShardResult,
+    ) -> list[tuple[EnrollmentIdentity, EnrollmentPhoto, GpuFaceExtraction, bytes]]:
+        """Read bytes for the chunk and extract faces.
+
+        Decode failures are counted but do not fail the whole chunk.  A fatal
+        GPU/inference error aborts the shard.
+        """
+        if not tasks:
+            return []
+
+        # Bounded concurrent file reads.
+        io_futures = [self._read_one(photo) for _, photo in tasks]
+        io_results = await asyncio.gather(*io_futures, return_exceptions=True)
+
+        valid: list[tuple[EnrollmentIdentity, EnrollmentPhoto, bytes]] = []
+        for (identity, photo), maybe_data in zip(tasks, io_results):
+            if isinstance(maybe_data, _DecodeError):
+                result.decode_error += 1
+                logger.warning("Decode/read failed for %s", photo.path)
+                continue
+            if isinstance(maybe_data, Exception):
+                result.decode_error += 1
+                logger.warning("Decode/read failed for %s: %s", photo.path, maybe_data)
+                continue
+            photo.content_sha256 = hashlib.sha256(maybe_data).hexdigest()
+            valid.append((identity, photo, maybe_data))
+
+        if not valid:
+            return []
+
+        image_bytes_list = [data for _, _, data in valid]
+        t0 = time.perf_counter()
+        try:
+            faces = await self._extract_batch_faces(image_bytes_list)
+        except Exception as exc:
+            result.failed += len(valid)
+            result.fatal_error = True
+            result.fatal_code = "EXTRACTION_ERROR"
+            result.fatal_stage = "gpu_extraction"
+            result.fatal_message = _sanitize(str(exc))
+            raise
+        result.extraction_ms += (time.perf_counter() - t0) * 1000
+
+        output: list[tuple[EnrollmentIdentity, EnrollmentPhoto, GpuFaceExtraction, bytes]] = []
+        for (identity, photo, data), face in zip(valid, faces):
+            if face is None:
+                result.no_face += 1
+                continue
+            output.append((identity, photo, face, data))
+        return output
+
+    async def _produce(
+        self,
+        identities: Iterable[EnrollmentIdentity],
+        queue: asyncio.Queue,
+        batch_size: int,
+        max_photos: int | None,
+        result: _ShardResult,
+        cancel_check: Callable[[], bool] | None,
+        consumer_task: asyncio.Task | None = None,
+    ) -> None:
+        """Stream identities, read bytes, extract faces, push to queue."""
+        pending: list[tuple[EnrollmentIdentity, EnrollmentPhoto]] = []
+        seen_photos = 0
+        should_stop = False
+
+        async def _put(item: list) -> None:
+            if consumer_task is None:
+                await queue.put(item)
+                return
+            try:
+                await asyncio.wait_for(queue.put(item), timeout=120)
+            except asyncio.TimeoutError:
+                if consumer_task.done() and consumer_task.exception():
+                    raise consumer_task.exception()
+                raise RuntimeError("queue.put timed out; consumer may be stalled")
+
+        logger.info("producer starting for %s identities (max_photos=%s)", "?", max_photos)
+        try:
+            for identity in identities:
+                result.discovered_identities += 1
+                result.discovered_photos += len(identity.photos)
+                logger.info(
+                    "producer identity %s photos=%d total_seen_identities=%d total_seen_photos=%d",
+                    identity.identity_key,
+                    len(identity.photos),
+                    result.discovered_identities,
+                    result.discovered_photos,
+                )
+                for photo in identity.photos:
+                    if max_photos is not None and seen_photos >= max_photos:
+                        should_stop = True
+                        break
+                    pending.append((identity, photo))
+                    seen_photos += 1
+                    if len(pending) >= batch_size:
+                        extracted = await self._read_and_extract(pending, result)
+                        await _put(extracted)
+                        result.total_batches += 1
+                        logger.info("producer queued batch %d size %d", result.total_batches, len(extracted))
+                        pending = []
+                        if cancel_check is not None and cancel_check():
+                            return
+                if should_stop:
+                    break
+        finally:
+            if pending:
+                extracted = await self._read_and_extract(pending, result)
+                await _put(extracted)
+                result.total_batches += 1
+                logger.info("producer queued final batch %d size %d", result.total_batches, len(extracted))
+            await queue.put(None)
+
+    async def _consume(
+        self,
+        queue: asyncio.Queue,
+        result: _ShardResult,
+        progress_callback: Callable[[dict[str, Any]], Any] | None,
+        process_record: ProcessRecord,
+    ) -> None:
+        """Persist extracted chunks, commit after each activation batch."""
+        logger.info("consumer starting")
+        seq = 0
+        while True:
+            logger.info("consumer waiting on queue")
+            item = await queue.get()
+            logger.info("consumer got item size=%s", len(item) if item is not None else None)
+            if item is None:
+                return
+            if not item:
+                continue
+
+            last_identity_key = item[-1][0].identity_key
+            try:
+                await self._persist_batch(item)
+            except Exception as exc:
+                result.persistence_error += len(item)
+                result.failed += len(item)
+                if not result.fatal_error:
+                    result.fatal_error = True
+                    result.fatal_code = "PERSISTENCE_ERROR"
+                    result.fatal_stage = "persist_batch"
+                    result.fatal_message = _sanitize(str(exc))
+                await self._commit_progress(process_record, result, last_identity_key, seq)
+                raise
+
+            result.processed += len(item)
+            result.enrolled += len(item)
+            seq += 1
+            logger.info("consumer persisted batch %d enrolled=%d", seq, result.enrolled)
+            await self._commit_progress(process_record, result, last_identity_key, seq)
+
+    async def _commit_progress(
+        self,
+        process_record: ProcessRecord,
+        result: _ShardResult,
+        last_identity_key: str,
+        seq: int,
+    ) -> None:
+        error_count = result.no_face + result.decode_error + result.persistence_error
+        soft_error_rate = (
+            (result.no_face + result.decode_error) / max(result.discovered_photos, 1)
+        )
+        progress = {
+            "discovered_identities": result.discovered_identities,
+            "discovered_photos": result.discovered_photos,
+            "processed": result.processed,
+            "enrolled": result.enrolled,
+            "no_face": result.no_face,
+            "decode_error": result.decode_error,
+            "persistence_error": result.persistence_error,
+            "failed": result.failed,
+            "soft_error_rate": round(soft_error_rate, 6),
+            "total_batches": result.total_batches,
+            "extraction_ms": round(result.extraction_ms, 2),
+            "io_ms": round(result.io_ms, 2),
+            "last_completed_identity_key": last_identity_key,
+        }
+        process_record.summary["progress"] = progress
+        self._db.add(
+            _event(
+                process_record.process_id,
+                seq,
+                "progress",
+                process_record.status,
+                process_record.status,
+                message=f"discovered={result.discovered_photos} enrolled={result.enrolled} no_face={result.no_face}",
+                details={k: v for k, v in progress.items() if k in ("enrolled", "no_face", "decode_error", "persistence_error", "failed", "processed")},
+            )
+        )
+        await self._db.commit()
+
     async def enroll_shard(
         self,
-        identities: tuple[EnrollmentIdentity, ...],
+        identities: Iterable[EnrollmentIdentity],
         *,
         parent_process_id: uuid.UUID | None = None,
         idempotency_key: str = "",
         cancel_check: Callable[[], bool] | None = None,
         progress_callback: Callable[[dict[str, Any]], Any] | None = None,
         max_photos: int | None = None,
+        worker_name: str | None = None,
     ) -> _ShardResult:
-        if not identities:
-            return _ShardResult()
-
-        result = _ShardResult(identities=len(identities))
-        result.photos = sum(len(i.photos) for i in identities)
+        result = _ShardResult(worker_name=worker_name or os.environ.get("WORKER_ID"))
 
         summary: dict[str, Any] = {
-            "identities": result.identities,
-            "photos": result.photos,
+            "worker_name": result.worker_name,
+            "identities": 0,
+            "photos": 0,
         }
         if parent_process_id is not None:
             summary["parent_process_id"] = str(parent_process_id)
         if idempotency_key:
             summary["idempotency_key"] = idempotency_key
+
         process_record = ProcessRecord(
             process_type="bulk_enroll_shard",
             status="running",
@@ -519,181 +596,142 @@ class BulkEnrollmentService:
         self._db.add(process_record)
         await self._db.flush()
 
-        seq = 0
-        self._db.add(
-            _event(process_record.process_id, seq, "started", "pending", "running")
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        consumer_task = asyncio.create_task(
+            self._consume(queue, result, progress_callback, process_record)
         )
-        seq += 1
+
+        def _on_consumer_done(t: asyncio.Task) -> None:
+            if t.done() and not t.cancelled() and t.exception() is not None:
+                exc = t.exception()
+                logger.error("consumer task died unexpectedly: %s", exc, exc_info=exc)
+
+        consumer_task.add_done_callback(_on_consumer_done)
 
         try:
-            person_id_map = await self._ensure_identities(identities)
-
-            identity_photo_counts = {
-                identity.identity_hmac: len(identity.photos)
-                for identity in identities
-            }
-
-            tasks = [
-                _PhotoTask(identity=identity, photo=photo, index=idx)
-                for identity in identities
-                for idx, photo in enumerate(identity.photos)
-            ]
-
-            if max_photos is not None and len(tasks) > max_photos:
-                tasks = tasks[:max_photos]
-                result.photos = len(tasks)
-                process_record.summary["photos"] = result.photos
-
-            staged_buffer: list[_StagedFace] = []
-            total_batches = (len(tasks) + self._extract_batch_size - 1) // self._extract_batch_size
-            prev_no_face = 0
-            scanned_counts: dict[str, int] = {}
-            last_completed_identity_key: str | None = None
-
-            for start in range(0, len(tasks), self._extract_batch_size):
-                chunk = tasks[start : start + self._extract_batch_size]
-                chunk_photo_ids = [uuid.UUID(t.photo.photo_id) for t in chunk]
-
-                # Pre-filter already-active duplicates so they skip file I/O and ML.
-                active_rows = await self._db.execute(
-                    select(FaceSample.photo_id).where(
-                        FaceSample.photo_id.in_(chunk_photo_ids),
-                        FaceSample.status == "active",
-                    )
-                )
-                active_photo_ids = {r[0] for r in active_rows.all()}
-                if active_photo_ids:
-                    result.faces_duplicate += len(active_photo_ids)
-                    chunk = [t for t in chunk if uuid.UUID(t.photo.photo_id) not in active_photo_ids]
-                    chunk_photo_ids = [uuid.UUID(t.photo.photo_id) for t in chunk]
-
-                image_bytes = await asyncio.gather(
-                    *(self._read_photo_bytes(t.photo.path) for t in chunk)
-                )
-
-                t0 = time.perf_counter()
-                faces = await self._extract_batch_faces(image_bytes)
-                result.extraction_ms += (time.perf_counter() - t0) * 1000
-
-                t0 = time.perf_counter()
-                with_faces = [
-                    (task, face)
-                    for task, face in zip(chunk, faces)
-                    if face is not None
-                ]
-                result.no_face += len(chunk) - len(with_faces)
-                if with_faces:
-                    await self._stage_batch(
-                        with_faces, person_id_map, result, staged_buffer
-                    )
-
-                # Update identity-level checkpoint after scanning this batch.
-                for task in chunk:
-                    key = task.identity.identity_hmac
-                    scanned_counts[key] = scanned_counts.get(key, 0) + 1
-                    if scanned_counts[key] >= identity_photo_counts.get(key, 1):
-                        last_completed_identity_key = task.identity.identity_key
-
-                if len(staged_buffer) >= self._activation_batch_size:
-                    await self._db.flush()
-                    await self._activate_buffer(staged_buffer)
-                    staged_buffer.clear()
-
-                result.total_scanned += len(chunk)
-                result.total_processed += len(with_faces) + result.no_face - prev_no_face
-                prev_no_face = result.no_face
-
-                result.io_ms += (time.perf_counter() - t0) * 1000
-
-                progress = {
-                    "identities": result.identities,
-                    "photos": result.photos,
-                    "faces_enrolled": result.faces_enrolled,
-                    "faces_duplicate": result.faces_duplicate,
-                    "no_face": result.no_face,
-                    "errors": result.errors,
-                    "total_scanned": result.total_scanned,
-                    "total_processed": result.total_processed,
-                    "batches_completed": start // self._extract_batch_size + 1,
-                    "total_batches": total_batches,
-                    "extraction_ms": result.extraction_ms,
-                    "io_ms": result.io_ms,
-                    "last_completed_identity_key": last_completed_identity_key,
-                }
-                process_record.summary["progress"] = progress
-                if progress_callback is not None:
-                    try:
-                        await progress_callback(progress)
-                    except Exception:
-                        logger.exception("progress callback failed")
-                await self._db.commit()
-
-                if cancel_check is not None and cancel_check():
-                    break
-
-            if staged_buffer:
-                await self._db.flush()
-                await self._activate_buffer(staged_buffer)
-                staged_buffer.clear()
-                await self._db.commit()
-
-            process_record.status = "completed"
-            process_record.completed_at = _utc_now()
-            process_record.summary.update(
-                {
-                    "faces_enrolled": result.faces_enrolled,
-                    "faces_duplicate": result.faces_duplicate,
-                    "no_face": result.no_face,
-                    "errors": result.errors,
-                    "last_completed_identity_key": last_completed_identity_key,
-                }
+            await self._produce(
+                identities,
+                queue,
+                self._extract_batch_size,
+                max_photos,
+                result,
+                cancel_check,
+                consumer_task=consumer_task,
             )
-            self._db.add(
-                _event(
-                    process_record.process_id,
-                    seq,
-                    "completed",
-                    "running",
-                    "completed",
-                    message=f"enrolled {result.faces_enrolled} faces ({result.faces_duplicate} duplicates)",
-                )
-            )
-            await self._db.commit()
-            return result
-
+            if not consumer_task.done():
+                await queue.put(None)
+            await consumer_task
         except EnrollmentCancelled:
-            process_record.status = "cancelled"
-            process_record.completed_at = _utc_now()
-            process_record.error_message = "cancelled by operator"
-            self._db.add(
-                _event(
-                    process_record.process_id,
-                    seq,
-                    "cancelled",
-                    "running",
-                    "cancelled",
-                    message=f"cancelled after {result.faces_enrolled} enrolled, {result.faces_duplicate} duplicates",
-                )
-            )
-            await self._db.commit()
+            await self._mark_cancelled(process_record, result)
             raise
-
         except Exception as exc:
-            process_record.status = "failed"
-            process_record.completed_at = _utc_now()
-            process_record.error_message = str(exc)[:500]
-            self._db.add(
-                _event(
-                    process_record.process_id,
-                    seq,
-                    "failed",
-                    "running",
-                    "failed",
-                    message=f"failure: {exc.__class__.__name__}",
-                )
-            )
-            await self._db.commit()
+            if not result.fatal_error:
+                result.fatal_error = True
+                result.fatal_code = result.fatal_code or "SHARD_FAILURE"
+                result.fatal_stage = result.fatal_stage or "unknown"
+                result.fatal_message = result.fatal_message or _sanitize(str(exc))
+            await self._mark_failed(process_record, result, str(exc))
             raise
+        finally:
+            if not consumer_task.done():
+                consumer_task.cancel()
+                try:
+                    await consumer_task
+                except asyncio.CancelledError:
+                    pass
+
+        soft_error_rate = (result.no_face + result.decode_error) / max(result.discovered_photos, 1)
+        if result.fatal_error or result.failed > 0 or soft_error_rate > 0.03:
+            result.status = "failed"
+            process_record.status = "failed"
+            process_record.summary["outcome"] = "failed"
+        elif soft_error_rate > 0.0:
+            process_record.status = "completed"
+            process_record.summary["outcome"] = "completed_with_warnings"
+        else:
+            process_record.status = "completed"
+            process_record.summary["outcome"] = "completed"
+
+        process_record.completed_at = _utc_now()
+        process_record.summary["progress"] = {
+            "discovered_identities": result.discovered_identities,
+            "discovered_photos": result.discovered_photos,
+            "processed": result.processed,
+            "enrolled": result.enrolled,
+            "no_face": result.no_face,
+            "decode_error": result.decode_error,
+            "persistence_error": result.persistence_error,
+            "failed": result.failed,
+            "soft_error_rate": round(soft_error_rate, 6),
+            "extraction_ms": round(result.extraction_ms, 2),
+            "io_ms": round(result.io_ms, 2),
+        }
+        if progress_callback is not None:
+            try:
+                await progress_callback(process_record.summary["progress"])
+            except Exception:
+                logger.exception("progress callback failed")
+        self._db.add(
+            _event(
+                process_record.process_id,
+                1,
+                "finished",
+                "running",
+                process_record.status,
+                message=f"status={process_record.summary['outcome']} enrolled={result.enrolled}",
+                details=process_record.summary["progress"],
+            )
+        )
+        await self._db.commit()
+        return result
+
+    async def _mark_cancelled(
+        self,
+        process_record: ProcessRecord,
+        result: _ShardResult,
+    ) -> None:
+        process_record.status = "cancelled"
+        process_record.completed_at = _utc_now()
+        process_record.error_message = "cancelled by operator"
+        self._db.add(
+            _event(
+                process_record.process_id,
+                1,
+                "cancelled",
+                "running",
+                "cancelled",
+                message=f"cancelled after {result.enrolled} enrolled",
+                details={"enrolled": result.enrolled, "processed": result.processed},
+            )
+        )
+        await self._db.commit()
+
+    async def _mark_failed(
+        self,
+        process_record: ProcessRecord,
+        result: _ShardResult,
+        raw_message: str,
+    ) -> None:
+        process_record.status = "failed"
+        process_record.completed_at = _utc_now()
+        process_record.error_message = _sanitize(raw_message)[:500]
+        process_record.summary["failure"] = {
+            "code": result.fatal_code or "UNKNOWN",
+            "stage": result.fatal_stage or "unknown",
+            "worker": result.worker_name,
+            "message": result.fatal_message or _sanitize(raw_message),
+        }
+        self._db.add(
+            _event(
+                process_record.process_id,
+                1,
+                "failed",
+                "running",
+                "failed",
+                message=f"{result.fatal_code or 'UNKNOWN'}: {result.fatal_message or _sanitize(raw_message)}",
+            )
+        )
+        await self._db.commit()
 
     async def create_parent_process(self, num_shards: int, total_photos: int) -> uuid.UUID:
         record = ProcessRecord(
@@ -713,17 +751,32 @@ class BulkEnrollmentService:
         record = await self._db.get(ProcessRecord, process_id)
         if record is None:
             raise RuntimeError(f"parent process {process_id} not found")
-        total_enrolled = sum(r.faces_enrolled for r in shard_results)
-        total_duplicate = sum(r.faces_duplicate for r in shard_results)
-        total_errors = sum(r.errors for r in shard_results)
-        record.status = "completed" if total_errors == 0 else "failed"
+        total_enrolled = sum(r.enrolled for r in shard_results)
+        total_failed = sum(r.failed for r in shard_results)
+        total_photos = sum(r.discovered_photos for r in shard_results)
+        total_no_face = sum(r.no_face for r in shard_results)
+        total_decode_error = sum(r.decode_error for r in shard_results)
+        any_fatal = any(r.fatal_error for r in shard_results)
+        soft_rate = (total_no_face + total_decode_error) / max(total_photos, 1)
+        if any_fatal or total_failed > 0 or soft_rate > 0.03:
+            record.status = "failed"
+            record.summary["outcome"] = "failed"
+        elif soft_rate > 0.0:
+            record.status = "completed"
+            record.summary["outcome"] = "completed_with_warnings"
+        else:
+            record.status = "completed"
+            record.summary["outcome"] = "completed"
         record.completed_at = _utc_now()
         record.summary.update(
             {
                 "shards": len(shard_results),
-                "faces_enrolled": total_enrolled,
-                "faces_duplicate": total_duplicate,
-                "errors": total_errors,
+                "discovered_photos": total_photos,
+                "enrolled": total_enrolled,
+                "no_face": total_no_face,
+                "decode_error": total_decode_error,
+                "failed": total_failed,
+                "soft_error_rate": round(soft_rate, 6),
             }
         )
         await self._db.commit()
@@ -732,6 +785,13 @@ class BulkEnrollmentService:
 def _utc_now() -> __import__("datetime").datetime:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
+
+
+def _sanitize(message: str) -> str:
+    """Strip filesystem paths and long stack traces for UI display."""
+    import re
+    message = re.sub(r"[/\\][^\s]{4,}", "<path>", message)
+    return message[:500]
 
 
 def _mask_hmac(hmac_hex: str) -> str:

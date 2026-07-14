@@ -15,7 +15,10 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
+
+import logging
+import traceback
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, status
@@ -23,6 +26,8 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.core.ids import (
@@ -40,6 +45,7 @@ from app.services.bulk_enrollment import BulkEnrollmentService, EnrollmentCancel
 from app.services.bulk_manifest import (
     EnrollmentIdentity,
     EnrollmentPhoto,
+    build_casia_manifest,
     build_lfw_manifest,
 )
 from app.services.vggface_manifest import (
@@ -64,7 +70,7 @@ class _ApiModel(BaseModel):
 
 
 class SourceDescriptor(_ApiModel):
-    type: Literal["local_lfw", "local_vggface", "synthetic", "manifest"] = Field(alias="type")
+    type: Literal["local_lfw", "local_vggface", "local_casia", "synthetic", "manifest"] = Field(alias="type")
     path: str | None = Field(alias="path", default=None)
     bucket: str | None = Field(alias="bucket", default=None)
     minio_prefix: str | None = Field(alias="minioPrefix", default=None)
@@ -79,7 +85,7 @@ class JobCreateRequest(_ApiModel):
     job_id: str = Field(alias="jobId")
     idempotency_key: str = Field(alias="idempotencyKey")
     source: SourceDescriptor
-    dataset_type: Literal["lfw", "vggface", "synthetic"] = Field(alias="datasetType")
+    dataset_type: Literal["lfw", "vggface", "casia", "synthetic"] = Field(alias="datasetType")
     mode: Literal["import", "benchmark"] = Field(alias="mode")
     requested_parallelism: int = Field(alias="requestedParallelism", default=1)
     assigned_workers: list[str] | None = Field(alias="assignedWorkers", default=None)
@@ -119,6 +125,7 @@ def _event(
     status_before: str | None,
     status_after: str | None,
     message: str = "",
+    details: dict[str, Any] | None = None,
 ) -> ProcessEvent:
     return ProcessEvent(
         process_id=process_id,
@@ -127,6 +134,7 @@ def _event(
         status_before=status_before,
         status_after=status_after,
         message=message,
+        details=details or {},
     )
 
 
@@ -192,6 +200,7 @@ def _build_synthetic_identities(
                 identity_hmac=hmac_val,
                 person_id=str(derive_person_id(hmac_val)),
                 face_identity_id=str(derive_face_identity_id(hmac_val)),
+                source_dataset="synthetic",
                 photos=tuple(photos),
             )
         )
@@ -216,6 +225,7 @@ def _load_manifest_identities(payload: SourceDescriptor) -> tuple[EnrollmentIden
                 identity_hmac=identity["identityHmac"],
                 person_id=identity["personId"],
                 face_identity_id=identity["faceIdentityId"],
+                source_dataset=identity.get("sourceDataset", "inline"),
                 photos=tuple(photos),
             )
         )
@@ -226,7 +236,8 @@ async def _load_identities(
     payload: SourceDescriptor,
     shard_index: int = 0,
     num_shards: int = 1,
-) -> tuple[EnrollmentIdentity, ...]:
+    max_photos: int | None = None,
+) -> Iterator[EnrollmentIdentity] | tuple[EnrollmentIdentity, ...]:
     if payload.type == "manifest":
         return _load_manifest_identities(payload)
     if payload.type == "synthetic":
@@ -246,8 +257,9 @@ async def _load_identities(
             shard_index=shard_index if num_shards > 1 else None,
             num_shards=num_shards if num_shards > 1 else None,
             resume_after_identity_key=payload.resume_after_identity_key,
+            max_photos=max_photos,
         )
-    elif payload.type == "local_lfw":
+    el    if payload.type == "local_lfw":
         if not payload.path:
             raise ValueError("local_lfw source requires path")
         root = Path(payload.path)
@@ -256,16 +268,20 @@ async def _load_identities(
         identities = build_lfw_manifest(root)
         if payload.max_identities is not None:
             identities = identities[: payload.max_identities]
+    elif payload.type == "local_casia":
+        if not payload.path:
+            raise ValueError("local_casia source requires path")
+        root = Path(payload.path)
+        if not root.is_dir():
+            raise ValueError(f"casia root not found: {root}")
+        identities = build_casia_manifest(root)
+        if payload.max_identities is not None:
+            identities = identities[: payload.max_identities]
     else:
         raise ValueError(f"unsupported source type: {payload.type}")
 
-    if num_shards > 1:
-        identities = shard_vggface_identities(
-            iter(identities), shard_index, num_shards
-        )
-
-    # Materialize the shard so the enrollment service can iterate it twice.
-    return tuple(identities)
+    # stream_vggface_manifest already applies sharding; do not shard again.
+    return iter(identities)
 
 
 def _job_status_response(
@@ -290,9 +306,17 @@ def _job_status_response(
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
-    loop.set_default_executor(
-        concurrent.futures.ThreadPoolExecutor(max_workers=128)
+    # One dedicated thread owns the TensorRT context; a separate bounded pool
+    # handles file reads and synchronous MinIO SDK calls.  Do not expose a
+    # global 128-thread default executor to unrelated operations.
+    io_workers = min(32, (os.cpu_count() or 4) * 2)
+    gpu_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="gpu-"
     )
+    io_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=io_workers, thread_name_prefix="io-"
+    )
+    loop.set_default_executor(io_executor)
     db_module.configure_engine()
 
     host_device_id, host_gpu_uuid = await _ensure_single_gpu_visible()
@@ -322,6 +346,8 @@ async def _lifespan(app: FastAPI):
         app.state.vector_store = vector_store
         app.state.pipeline = pipeline
         app.state.pipeline_lock = asyncio.Lock()
+        app.state.gpu_executor = gpu_executor
+        app.state.io_executor = io_executor
         app.state.readiness_service = ReadinessService(
             engine=db_module.engine,
             storage=storage,
@@ -343,6 +369,8 @@ async def _lifespan(app: FastAPI):
                 await vector_store.close()
             except Exception:
                 pass
+        gpu_executor.shutdown(wait=True)
+        io_executor.shutdown(wait=True)
         await db_module.dispose_engine()
 
 
@@ -388,7 +416,7 @@ def create_worker_app() -> FastAPI:
                 detail="idempotency_key is required",
             )
 
-        if _WORKER_ROLE == "online" and job.dataset_type in {"lfw", "vggface"}:
+        if _WORKER_ROLE == "online" and job.dataset_type in {"lfw", "vggface", "casia"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="bulk enrollment is prohibited on the online-only worker",
@@ -452,7 +480,16 @@ def create_worker_app() -> FastAPI:
                 await session.commit()
             return _job_status_response(record, job, request.app.state.worker_info)
 
-        return await _run_job(request, job, process_id)
+        # Start work in background so POST returns immediately and health/cancel
+        # endpoints stay responsive during long GPU inference.
+        app_state = request.app.state
+        request.app.state.current_job_id = str(process_id)
+
+        async def _job_runner() -> None:
+            await _run_job(app_state, job, process_id)
+
+        asyncio.create_task(_job_runner())
+        return _job_status_response(record, job, request.app.state.worker_info)
 
     @app.post("/internal/v1/jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
     async def cancel_job(
@@ -494,11 +531,12 @@ def create_worker_app() -> FastAPI:
             ), request.app.state.worker_info)
 
     async def _run_job(
-        request: Request,
+        app_state: Any,
         job: JobCreateRequest,
         process_id: uuid.UUID,
-    ) -> JobStatusResponse:
-        request.app.state.current_job_id = str(process_id)
+    ) -> JobStatusResponse | None:
+        app_state.cancel_requested = False
+        app_state.current_job_id = str(job.job_id)
         try:
             async with db_module.AsyncSessionLocal() as session:
                 record = await session.get(ProcessRecord, process_id)
@@ -506,7 +544,7 @@ def create_worker_app() -> FastAPI:
                     raise RuntimeError("process record disappeared")
                 if record.status == "running":
                     # Another concurrent request started it; wait/return.
-                    return _job_status_response(record, job, request.app.state.worker_info)
+                    return _job_status_response(record, job, app_state.worker_info)
                 record.status = "running"
                 record.started_at = _utc_now()
                 session.add(
@@ -525,6 +563,7 @@ def create_worker_app() -> FastAPI:
                 job.source,
                 shard_index=job.shard_index or 0,
                 num_shards=job.requested_parallelism or 1,
+                max_photos=job.max_photos,
             )
 
             async def _report_progress(progress: dict[str, Any]) -> None:
@@ -538,54 +577,69 @@ def create_worker_app() -> FastAPI:
             async with db_module.AsyncSessionLocal() as session:
                 service = BulkEnrollmentService(
                     db=session,
-                    storage=request.app.state.storage,
-                    vector_store=request.app.state.vector_store,
-                    pipeline=request.app.state.pipeline,
-                    pipeline_lock=request.app.state.pipeline_lock,
+                    storage=app_state.storage,
+                    vector_store=app_state.vector_store,
+                    pipeline=app_state.pipeline,
+                    pipeline_lock=app_state.pipeline_lock,
+                    gpu_executor=app_state.gpu_executor,
+                    io_executor=app_state.io_executor,
                     qdrant_wait=False,
                 )
                 result = await service.enroll_shard(
                     identities,
                     parent_process_id=process_id,
                     idempotency_key=job.idempotency_key,
-                    cancel_check=lambda: request.app.state.cancel_requested,
+                    cancel_check=lambda: app_state.cancel_requested,
                     progress_callback=_report_progress,
                     max_photos=job.max_photos,
+                    worker_name=_WORKER_ID,
                 )
 
             async with db_module.AsyncSessionLocal() as session:
                 record = await session.get(ProcessRecord, process_id)
-                record.status = "completed"
+                # Service already finalized the shard process record; keep the
+                # same decisions but expose the new result-shape fields.
+                record.status = result.status or record.status
                 record.completed_at = _utc_now()
                 record.summary["progress"] = {
-                    "identities": result.identities,
-                    "photos": result.photos,
-                    "faces_enrolled": result.faces_enrolled,
-                    "faces_duplicate": result.faces_duplicate,
+                    "worker_name": result.worker_name,
+                    "discovered_identities": result.discovered_identities,
+                    "discovered_photos": result.discovered_photos,
+                    "processed": result.processed,
+                    "enrolled": result.enrolled,
                     "no_face": result.no_face,
-                    "errors": result.errors,
-                    "total_scanned": result.total_scanned,
-                    "total_processed": result.total_processed,
+                    "decode_error": result.decode_error,
+                    "persistence_error": result.persistence_error,
+                    "failed": result.failed,
+                    "fatal_error": result.fatal_error,
                     "extraction_ms": result.extraction_ms,
                     "io_ms": result.io_ms,
                 }
+                if result.fatal_code:
+                    record.summary["failure"] = {
+                        "code": result.fatal_code,
+                        "stage": result.fatal_stage,
+                        "worker": result.worker_name,
+                        "message": result.fatal_message,
+                    }
                 flag_modified(record, "summary")
                 session.add(
                     _event(
                         process_id,
                         2,
-                        "completed",
+                        "completed" if record.status == "completed" else record.status,
                         "running",
-                        "completed",
+                        record.status,
                         message=(
-                            f"enrolled {result.faces_enrolled} faces, "
-                            f"{result.faces_duplicate} duplicates, "
-                            f"{result.no_face} no_face"
+                            f"enrolled {result.enrolled} faces, "
+                            f"no_face={result.no_face}, "
+                            f"decode_error={result.decode_error}, "
+                            f"failed={result.failed}"
                         ),
                     )
                 )
                 await session.commit()
-                return _job_status_response(record, job, request.app.state.worker_info)
+                return _job_status_response(record, job, app_state.worker_info)
 
         except EnrollmentCancelled:
             async with db_module.AsyncSessionLocal() as session:
@@ -605,31 +659,39 @@ def create_worker_app() -> FastAPI:
                         )
                     )
                     await session.commit()
-                return _job_status_response(record, job, request.app.state.worker_info)
+                return _job_status_response(record, job, app_state.worker_info)
 
         except Exception as exc:
-            async with db_module.AsyncSessionLocal() as session:
-                record = await session.get(ProcessRecord, process_id)
-                if record is not None:
-                    record.status = "failed"
-                    record.completed_at = _utc_now()
-                    record.error_message = str(exc)[:500]
-                    flag_modified(record, "summary")
-                    session.add(
-                        _event(
-                            process_id,
-                            2,
-                            "failed",
-                            "running",
-                            "failed",
-                            message=f"failure: {exc.__class__.__name__}",
+            tb = traceback.format_exc()
+            logger.exception("shard %s failed: %s", process_id, exc)
+            record = None
+            try:
+                async with db_module.AsyncSessionLocal() as session:
+                    record = await session.get(ProcessRecord, process_id)
+                    if record is not None:
+                        record.status = "failed"
+                        record.completed_at = _utc_now()
+                        record.error_message = str(exc)[:500]
+                        record.summary["error_traceback"] = tb[-4000:]
+                        flag_modified(record, "summary")
+                        session.add(
+                            _event(
+                                process_id,
+                                2,
+                                "failed",
+                                "running",
+                                "failed",
+                                message=f"failure: {exc.__class__.__name__}",
+                                details={"traceback": tb[-2000:]},
+                            )
                         )
-                    )
-                    await session.commit()
-                return _job_status_response(record, job, request.app.state.worker_info)
+                        await session.commit()
+            except Exception as persist_exc:
+                logger.exception("could not persist failure for %s: %s", process_id, persist_exc)
+            return _job_status_response(record, job, app_state.worker_info)
         finally:
-            request.app.state.current_job_id = None
-            request.app.state.cancel_requested = False
+            app_state.current_job_id = None
+            app_state.cancel_requested = False
 
     @app.get("/internal/v1/jobs/{job_id}")
     async def get_job(
@@ -652,6 +714,43 @@ def create_worker_app() -> FastAPI:
                 completed_at=record.completed_at.isoformat() if record.completed_at else None,
                 error_message=record.error_message,
             )
+
+    def _coro_chain(coro: Any) -> str:
+        parts: list[str] = []
+        seen: set[int] = set()
+        while coro is not None and id(coro) not in seen:
+            seen.add(id(coro))
+            frame = getattr(coro, "cr_frame", None) or getattr(coro, "gi_frame", None)
+            name = getattr(coro, "__name__", type(coro).__name__)
+            if frame is not None:
+                parts.append(
+                    f"  coro={name} at {frame.f_code.co_filename}:{frame.f_lineno} "
+                    f"locals={ {k: repr(v)[:80] for k, v in list(frame.f_locals.items())[:5]} }"
+                )
+            else:
+                parts.append(f"  coro={name} (no frame)")
+            coro = getattr(coro, "cr_await", None) or getattr(coro, "gi_yieldfrom", None)
+        return "\n".join(parts)
+
+    @app.get("/internal/v1/debug/tasks")
+    async def debug_tasks() -> dict[str, Any]:
+        stacks: list[str] = []
+        for task in asyncio.all_tasks():
+            if task.get_name() in {"Task-1", "Task-2"}:
+                continue
+            try:
+                buf = io.StringIO()
+                task.print_stack(file=buf)
+                chain = _coro_chain(task.get_coro()) if task.get_coro() else "no coro"
+                stacks.append(
+                    f"--- {task.get_name()} ---\n"
+                    + buf.getvalue()
+                    + "\nawait chain:\n"
+                    + chain
+                )
+            except Exception as exc:
+                stacks.append(f"--- {task.get_name()} err {exc} ---")
+        return {"tasks": stacks, "current_job_id": app.state.current_job_id}
 
     return app
 

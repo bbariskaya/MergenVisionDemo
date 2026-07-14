@@ -17,9 +17,13 @@ from app.schemas.face import (
 )
 from app.services.bulk_orchestrator import (
     dispatch_shards,
+    get_casia_job,
+    get_lfw_job,
     get_vggface_job,
     request_cancellation,
     resume_vggface_job,
+    start_casia_job,
+    start_lfw_job,
     start_vggface_job,
 )
 
@@ -116,13 +120,59 @@ async def get_latest_job(
     return _to_response(refreshed)
 
 
+@router.post(
+    "/lfw",
+    response_model=VggfaceBulkJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start durable LFW bulk enrollment",
+)
+async def start_lfw(
+    request: Annotated[VggfaceBulkJobStartRequest, ...],
+    background_tasks: BackgroundTasks,
+) -> VggfaceBulkJobResponse:
+    result = await start_lfw_job(max_photos=request.max_photos)
+    background_tasks.add_task(dispatch_shards, uuid.UUID(result.job_id))
+    record = await get_lfw_job(uuid.UUID(result.job_id))
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to create job",
+        )
+    return _to_response(record)
+
+
+@router.post(
+    "/casia",
+    response_model=VggfaceBulkJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start durable CASIA-WebFace bulk enrollment",
+)
+async def start_casia(
+    request: Annotated[VggfaceBulkJobStartRequest, ...],
+    background_tasks: BackgroundTasks,
+) -> VggfaceBulkJobResponse:
+    result = await start_casia_job(max_photos=request.max_photos)
+    background_tasks.add_task(dispatch_shards, uuid.UUID(result.job_id))
+    record = await get_casia_job(uuid.UUID(result.job_id))
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to create job",
+        )
+    return _to_response(record)
+
+
 @router.get(
     "/{job_id}",
     response_model=VggfaceBulkJobResponse,
-    summary="Get durable VGGFace bulk enrollment status",
+    summary="Get durable bulk enrollment status",
 )
 async def get_job(job_id: uuid.UUID) -> VggfaceBulkJobResponse:
     record = await get_vggface_job(job_id)
+    if record is None:
+        record = await get_lfw_job(job_id)
+    if record is None:
+        record = await get_casia_job(job_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
     return _to_response(record)

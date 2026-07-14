@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,11 +26,16 @@ from app.core.config import settings
 from app.core.ids import derive_process_id
 from app.domain.models import PersonPhoto, ProcessEvent, ProcessRecord
 from app.infrastructure import db as db_module
-from app.services.vggface_manifest import vggface_preflight
+from app.services.bulk_manifest import build_casia_manifest, expected_cardinality
+from app.services.vggface_manifest_cache import get_vggface_preflight
 
 logger = logging.getLogger(__name__)
 
-_BULK_WORKERS = ["gpu-worker-1", "gpu-worker-2"]
+_BULK_WORKERS = [
+    w.strip()
+    for w in os.environ.get("BULK_WORKERS", "gpu-worker-1,gpu-worker-2").split(",")
+    if w.strip()
+]
 _RECOGNITION_PROBE_URL = "http://localhost:8000/faces/recognize"
 _PROBE_INTERVAL_SECONDS = 5.0
 _PROBE_TIMEOUT_SECONDS = 10.0
@@ -73,7 +79,7 @@ async def start_vggface_job(
     target = settings.vggface_target_active_photos
     remaining_budget = max(0, target - active_photos)
 
-    preflight = await asyncio.to_thread(vggface_preflight, settings.vggface_dataset_path)
+    preflight = await asyncio.to_thread(get_vggface_preflight, settings.vggface_dataset_path)
     requested_budget = max_photos if max_photos is not None else preflight.photo_count
     budget = min(requested_budget, remaining_budget, preflight.photo_count)
     if budget <= 0:
@@ -132,20 +138,161 @@ async def start_vggface_job(
     )
 
 
+async def start_lfw_job(
+    *,
+    max_photos: int | None = None,
+) -> VggfaceJobStartResult:
+    """Create a durable LFW parent job and queue shard work."""
+    active_photos = await _active_photo_count()
+    target = settings.lfw_target_active_photos
+    remaining_budget = max(0, target - active_photos)
+
+    root = settings.lfw_dataset_path
+    num_identities, num_photos = await asyncio.to_thread(expected_cardinality, root)
+    requested_budget = max_photos if max_photos is not None else num_photos
+    budget = min(requested_budget, remaining_budget, num_photos)
+    if budget <= 0:
+        raise ValueError(
+            f"LFW photo budget exhausted (active={active_photos}, target={target})"
+        )
+
+    async with db_module.AsyncSessionLocal() as db:
+        parent = ProcessRecord(
+            process_type="lfw_bulk",
+            status="queued",
+            summary={
+                "dataset_type": "lfw",
+                "assigned_workers": _BULK_WORKERS,
+                "requested_parallelism": len(_BULK_WORKERS),
+                "target_total_active_photos": target,
+                "starting_active_photos": active_photos,
+                "remaining_budget": remaining_budget,
+                "requested_photos": budget,
+                "preflight_identities": num_identities,
+                "preflight_photos": num_photos,
+                "shards": [],
+                "probe_latencies_ms": [],
+            },
+        )
+        db.add(parent)
+        await db.flush()
+
+        shards: list[dict[str, Any]] = []
+        per_shard_budget = math.ceil(budget / len(_BULK_WORKERS))
+        for idx, worker in enumerate(_BULK_WORKERS):
+            idempotency = f"lfw-bulk:{parent.process_id}:shard:{idx}"
+            shard_process_id = str(_shard_process_id(idempotency))
+            shards.append(
+                {
+                    "worker_id": worker,
+                    "shard_index": idx,
+                    "idempotency_key": idempotency,
+                    "process_id": shard_process_id,
+                    "status": "queued",
+                    "max_photos": per_shard_budget,
+                    "dataset_type": "lfw",
+                }
+            )
+        parent.summary["shards"] = shards
+        flag_modified(parent, "summary")
+        await db.commit()
+
+    return VggfaceJobStartResult(
+        job_id=str(parent.process_id),
+        starting_active_photos=active_photos,
+        target_total_active_photos=target,
+        remaining_budget=remaining_budget,
+        assigned_workers=_BULK_WORKERS,
+    )
+
+
+async def start_casia_job(
+    *,
+    max_photos: int | None = None,
+) -> VggfaceJobStartResult:
+    """Create a durable CASIA-WebFace parent job and queue shard work."""
+    active_photos = await _active_photo_count()
+    target = settings.casia_target_active_photos
+    remaining_budget = max(0, target - active_photos)
+
+    root = settings.casia_dataset_path
+    identities = await asyncio.to_thread(build_casia_manifest, root)
+    num_identities = len(identities)
+    num_photos = sum(len(i.photos) for i in identities)
+    requested_budget = max_photos if max_photos is not None else num_photos
+    budget = min(requested_budget, remaining_budget, num_photos)
+    if budget <= 0:
+        raise ValueError(
+            f"CASIA photo budget exhausted (active={active_photos}, target={target})"
+        )
+
+    async with db_module.AsyncSessionLocal() as db:
+        parent = ProcessRecord(
+            process_type="casia_bulk",
+            status="queued",
+            summary={
+                "dataset_type": "casia",
+                "assigned_workers": _BULK_WORKERS,
+                "requested_parallelism": len(_BULK_WORKERS),
+                "target_total_active_photos": target,
+                "starting_active_photos": active_photos,
+                "remaining_budget": remaining_budget,
+                "requested_photos": budget,
+                "preflight_identities": num_identities,
+                "preflight_photos": num_photos,
+                "shards": [],
+                "probe_latencies_ms": [],
+            },
+        )
+        db.add(parent)
+        await db.flush()
+
+        shards: list[dict[str, Any]] = []
+        per_shard_budget = math.ceil(budget / len(_BULK_WORKERS))
+        for idx, worker in enumerate(_BULK_WORKERS):
+            idempotency = f"casia-bulk:{parent.process_id}:shard:{idx}"
+            shard_process_id = str(_shard_process_id(idempotency))
+            shards.append(
+                {
+                    "worker_id": worker,
+                    "shard_index": idx,
+                    "idempotency_key": idempotency,
+                    "process_id": shard_process_id,
+                    "status": "queued",
+                    "max_photos": per_shard_budget,
+                    "dataset_type": "casia",
+                }
+            )
+        parent.summary["shards"] = shards
+        flag_modified(parent, "summary")
+        await db.commit()
+
+    return VggfaceJobStartResult(
+        job_id=str(parent.process_id),
+        starting_active_photos=active_photos,
+        target_total_active_photos=target,
+        remaining_budget=remaining_budget,
+        assigned_workers=_BULK_WORKERS,
+    )
+
+
 def _build_worker_payload(
     shard: dict[str, Any],
 ) -> dict[str, Any]:
-    source: dict[str, Any] = {
-        "type": "local_vggface",
-        "path": str(settings.vggface_dataset_path),
-    }
+    dataset_type = shard.get("dataset_type", "vggface")
+    if dataset_type == "lfw":
+        source: dict[str, Any] = {"type": "local_lfw", "path": str(settings.lfw_dataset_path)}
+    elif dataset_type == "casia":
+        source = {"type": "local_casia", "path": str(settings.casia_dataset_path)}
+    else:
+        source = {"type": "local_vggface", "path": str(settings.vggface_dataset_path)}
     if shard.get("resume_after_identity_key"):
         source["resumeAfterIdentityKey"] = shard["resume_after_identity_key"]
     return {
         "jobId": shard["process_id"],
         "idempotencyKey": shard["idempotency_key"],
         "source": source,
-        "datasetType": "vggface",
+        "datasetType": dataset_type,
         "mode": "import",
         "requestedParallelism": len(_BULK_WORKERS),
         "assignedWorkers": _BULK_WORKERS,
@@ -154,18 +301,24 @@ def _build_worker_payload(
     }
 
 
+_TERMINAL_SHARD_STATUSES = {"completed", "failed", "cancelled"}
+_POLL_INTERVAL_SECONDS = 2.0
+
+
 async def _dispatch_one_shard(
     client: httpx.AsyncClient,
     parent_id: __import__("uuid").UUID,
     shard: dict[str, Any],
 ) -> None:
     worker = shard["worker_id"]
-    url = f"http://{worker}:8001/internal/v1/jobs"
+    post_url = f"http://{worker}:8001/internal/v1/jobs"
+    process_id = shard["process_id"]
+    poll_url = f"http://{worker}:8001/internal/v1/jobs/{process_id}"
     payload = _build_worker_payload(shard)
     logger.info("dispatching shard %s to %s", shard["shard_index"], worker)
 
     try:
-        resp = await client.post(url, json=payload, timeout=None)
+        resp = await client.post(post_url, json=payload, timeout=None)
         resp.raise_for_status()
         body = resp.json()
         shard["status"] = body.get("status", "unknown")
@@ -173,12 +326,47 @@ async def _dispatch_one_shard(
             "status": body.get("status"),
             "progress": body.get("progress", {}),
         }
-        logger.info("shard %s finished on %s: %s", shard["shard_index"], worker, body.get("status"))
     except Exception as exc:
-        logger.exception("shard %s failed on %s", shard["shard_index"], worker)
+        logger.exception("shard %s failed to start on %s", shard["shard_index"], worker)
         shard["status"] = "failed"
         shard["worker_response"] = {"error": f"{exc.__class__.__name__}: {exc}"}
+        await _persist_shard_update(parent_id, shard)
+        return
 
+    # The worker runs the job in the background; poll its status endpoint
+    # until it reaches a terminal state.
+    while shard["status"] not in _TERMINAL_SHARD_STATUSES:
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+        try:
+            resp = await client.get(poll_url, timeout=10.0)
+            resp.raise_for_status()
+            body = resp.json()
+            shard["status"] = body.get("status", shard["status"])
+            shard["worker_response"] = {
+                "status": body.get("status"),
+                "progress": body.get("progress", {}),
+            }
+        except Exception as exc:
+            logger.warning(
+                "shard %s poll on %s failed: %s",
+                shard["shard_index"],
+                worker,
+                exc.__class__.__name__,
+            )
+        await _persist_shard_update(parent_id, shard)
+
+    logger.info(
+        "shard %s finished on %s: %s",
+        shard["shard_index"],
+        worker,
+        shard["status"],
+    )
+
+
+async def _persist_shard_update(
+    parent_id: __import__("uuid").UUID,
+    shard: dict[str, Any],
+) -> None:
     async with db_module.AsyncSessionLocal() as db:
         parent = await db.get(ProcessRecord, parent_id)
         if parent is not None:
@@ -308,13 +496,16 @@ async def _aggregate_shards(
             shard["status"] = record.status
             shard["progress"] = record.summary.get("progress", {})
             progress = record.summary.get("progress", {})
-            total_enrolled += progress.get("faces_enrolled", 0)
+            total_enrolled += progress.get("enrolled", progress.get("faces_enrolled", 0))
             total_duplicate += progress.get("faces_duplicate", 0)
             total_no_face += progress.get("no_face", 0)
-            total_errors += progress.get("errors", 0)
-            total_scanned += progress.get("total_scanned", 0)
-            total_processed += progress.get("total_processed", 0)
-            total_discovered += progress.get("photos", shard.get("max_photos", 0))
+            decode_err = progress.get("decode_error", 0)
+            persist_err = progress.get("persistence_error", 0)
+            failed_err = progress.get("failed", 0)
+            total_errors += decode_err + persist_err + failed_err + progress.get("errors", 0)
+            total_scanned += progress.get("processed", progress.get("total_scanned", 0))
+            total_processed += progress.get("processed", progress.get("total_processed", 0))
+            total_discovered += progress.get("discovered_photos", progress.get("photos", shard.get("max_photos", 0)))
             if record.status == "failed":
                 failed_shards += 1
             elif record.status == "cancelled":
@@ -379,10 +570,10 @@ async def _aggregate_parent(parent: ProcessRecord, db: db_module.AsyncSession) -
     flag_modified(parent, "summary")
 
 
-async def get_vggface_job(job_id: __import__("uuid").UUID) -> ProcessRecord | None:
+async def _get_job(job_id: __import__("uuid").UUID, process_type: str) -> ProcessRecord | None:
     async with db_module.AsyncSessionLocal() as db:
         parent = await db.get(ProcessRecord, job_id)
-        if parent is None or parent.process_type != "vggface_bulk":
+        if parent is None or parent.process_type != process_type:
             return None
         computed = await _aggregate_shards(parent, db)
         parent.summary = {**parent.summary, **computed}
@@ -391,10 +582,25 @@ async def get_vggface_job(job_id: __import__("uuid").UUID) -> ProcessRecord | No
         return parent
 
 
+async def get_vggface_job(job_id: __import__("uuid").UUID) -> ProcessRecord | None:
+    return await _get_job(job_id, "vggface_bulk")
+
+
+async def get_lfw_job(job_id: __import__("uuid").UUID) -> ProcessRecord | None:
+    return await _get_job(job_id, "lfw_bulk")
+
+
+async def get_casia_job(job_id: __import__("uuid").UUID) -> ProcessRecord | None:
+    return await _get_job(job_id, "casia_bulk")
+
+
+_BULK_PROCESS_TYPES = {"vggface_bulk", "lfw_bulk", "casia_bulk"}
+
+
 async def request_cancellation(job_id: __import__("uuid").UUID) -> ProcessRecord | None:
     async with db_module.AsyncSessionLocal() as db:
         parent = await db.get(ProcessRecord, job_id)
-        if parent is None or parent.process_type != "vggface_bulk":
+        if parent is None or parent.process_type not in _BULK_PROCESS_TYPES:
             return None
         if parent.status in ("cancelled", "completed", "failed"):
             return parent

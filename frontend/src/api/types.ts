@@ -162,12 +162,21 @@ export interface VggfaceBulkJob {
   currentActivePhotos: number
   photosAddedByJob: number
   requestedPhotos: number
+  totalDiscovered: number
+  totalScanned: number
+  totalProcessed: number
   totalEnrolled: number
   totalDuplicate: number
   totalNoFace: number
   totalErrors: number
+  totalInFlight: number
+  totalRejected: number
   elapsedSeconds: number
   avgPhotosPerSecond: number
+  scannedPhotosPerSecond: number
+  processedPhotosPerSecond: number
+  enrolledPhotosPerSecond: number
+  duplicatePhotosPerSecond: number
   probeP50Ms: number | null
   probeP95Ms: number | null
   shards: BulkJobShard[]
